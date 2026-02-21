@@ -1,0 +1,5 @@
+{
+  "server": "mail.example.com:993",
+  "username": "user@example.com",
+  "password": "password"
+}
