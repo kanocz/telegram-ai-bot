@@ -1,6 +1,6 @@
 # ai-webfetch
 
-Telegram bot and CLI tool: AI assistant with web and email (IMAP) access.
+Telegram bot and CLI tool: AI assistant with web, email (IMAP), and Home Assistant access.
 
 ## Configuration
 
@@ -33,6 +33,17 @@ New format (with language):
   "password": "your-password"
 }
 ```
+
+### homeassistant.json — Home Assistant
+
+```json
+{
+  "url": "http://homeassistant.local:8123",
+  "token": "your-long-lived-access-token"
+}
+```
+
+Generate a token in Home Assistant: Profile → Security → Long-lived access tokens → Create token.
 
 ### telegram.json — Telegram Bot API
 
@@ -92,6 +103,9 @@ The `bot` section is optional (only required for `-telegram-bot`).
 | `imap_read_message` | Full message content by UID |
 | `imap_summarize_message` | AI summarization via sub-agent (saves context) |
 | `imap_digest_message` | Full analysis: summary + category + conversation history (all in sub-agent) |
+| `ha_list` | Discover Home Assistant areas (with aliases) and entities in an area |
+| `ha_state` | Detailed entity state with domain-specific attributes |
+| `ha_call` | Call a Home Assistant service (turn on/off, set temperature, etc.) |
 
 ## Prompt customization
 
@@ -226,6 +240,18 @@ Bot commands:
 - `/news` — news digest
 - `/mail [hours]` — mail digest (default 24 hours)
 - any text — free-form query with tool-loop
+
+### Smart home
+
+Control Home Assistant devices using natural language (requires `homeassistant.json`):
+
+```bash
+./ai-webfetch "Turn off all lights on the second floor"
+./ai-webfetch "What's the temperature in the bedroom?"
+./ai-webfetch "Open the blinds in the living room"
+```
+
+The assistant automatically discovers areas and entities via `ha_list`, reads states with `ha_state`, and controls devices with `ha_call`. Area and entity aliases configured in Home Assistant (including Voice assistant aliases) are used for matching.
 
 ### Debugging sub-agents
 
