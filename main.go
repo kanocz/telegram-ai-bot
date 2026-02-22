@@ -244,6 +244,7 @@ func main() {
 		return
 	}
 
+	defer tools.HAClose()
 	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
