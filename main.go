@@ -76,6 +76,8 @@ func main() {
 	languageFlag := flag.String("language", "", "response language (overrides config)")
 	exportDefaultPrompts := flag.String("export-default-prompts", "", "export default prompts to directory and exit")
 	promptsDir := flag.String("prompts-dir", "", "load prompts from directory (missing files use defaults)")
+	enableMCP := flag.String("enable-mcp", "", "activate MCP servers by name (comma-separated)")
+	mcpConfigPath := flag.String("mcp-config", "mcp.json", "path to MCP server config file")
 	flag.Parse()
 
 	// Reset terminal colors on Ctrl+C (interactive mode only)
@@ -166,6 +168,36 @@ func main() {
 
 	showThinking := !*noThink && !*quiet
 
+	// Load MCP config (optional — nil if no config file)
+	var mcpMgr *MCPManager
+	if _, err := os.Stat(*mcpConfigPath); err == nil {
+		mcpMgr, err = LoadMCPConfig(*mcpConfigPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcp config error: %v\n", err)
+			os.Exit(1)
+		}
+		mcpMgr.InitEnabled(logf)
+	}
+
+	// Parse -enable-mcp flag names
+	var flagMCPNames []string
+	if *enableMCP != "" {
+		for _, n := range strings.Split(*enableMCP, ",") {
+			n = strings.TrimSpace(n)
+			if n != "" {
+				flagMCPNames = append(flagMCPNames, n)
+			}
+		}
+		if mcpMgr == nil {
+			fmt.Fprintf(os.Stderr, "error: -enable-mcp used but %s not found\n", *mcpConfigPath)
+			os.Exit(1)
+		}
+		if err := mcpMgr.InitServers(flagMCPNames); err != nil {
+			fmt.Fprintf(os.Stderr, "mcp init error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Set up sub-agent function for tools that need AI processing
 	showSA := *showSubAgents && !*quiet
 	tools.SubAgentFn = func(systemPrompt, userMessage string) (string, error) {
@@ -202,8 +234,22 @@ func main() {
 		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output)
 	}
 
+	// Parse /mcp prefix from query and merge with flag names
+	prefixNames, query := parseMCPPrefix(query)
+	mcpNames := dedup(flagMCPNames, prefixNames)
+	if len(mcpNames) > 0 {
+		if mcpMgr == nil {
+			fmt.Fprintf(os.Stderr, "error: /mcp prefix used but %s not found\n", *mcpConfigPath)
+			os.Exit(1)
+		}
+		if err := mcpMgr.InitServers(mcpNames); err != nil {
+			fmt.Fprintf(os.Stderr, "mcp init error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	if *mailSummary {
-		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24)
+		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mail summary error: %v\n", err)
 			os.Exit(1)
@@ -220,7 +266,7 @@ func main() {
 	}
 
 	if *newsSummary {
-		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsURLs, &prompts)
+		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsURLs, &prompts, mcpMgr, mcpNames)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
 			os.Exit(1)
@@ -237,7 +283,7 @@ func main() {
 	}
 
 	if *telegramBot {
-		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsURLs); err != nil {
+		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsURLs, mcpMgr); err != nil {
 			fmt.Fprintf(os.Stderr, "bot error: %v\n", err)
 			os.Exit(1)
 		}
@@ -245,7 +291,7 @@ func main() {
 	}
 
 	defer tools.HAClose()
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts)
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
@@ -263,7 +309,15 @@ func main() {
 
 func runQuery(cfg modelConfig, modelID string, query string,
 	showThinking, verboseTools bool, contentOut io.Writer,
-	logf func(string, ...any), prompts *Prompts) (string, error) {
+	logf func(string, ...any), prompts *Prompts,
+	mcpMgr *MCPManager, mcpNames []string) (string, error) {
+
+	// Merge built-in + MCP tool definitions
+	toolDefs := tools.All()
+	if mcpMgr != nil {
+		toolDefs = append(toolDefs, mcpMgr.ActiveToolDefs(mcpNames)...)
+	}
+	execTool := makeToolExec(mcpMgr, mcpNames)
 
 	messages := []Message{
 		{Role: "system", Content: prompts.SystemPrompt},
@@ -271,7 +325,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 
 	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, tools.All(), cfg.Limit.Output, showThinking, contentOut)
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut)
 		if err != nil {
 			return "", err
 		}
@@ -296,16 +350,12 @@ func runQuery(cfg modelConfig, modelID string, query string,
 					colorCyan, tc.Function.Name, tc.Function.Arguments, colorReset)
 			}
 
+			res, execErr := execTool(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			var toolResult string
-			if tool, ok := tools.Get(tc.Function.Name); ok {
-				res, execErr := tool.Execute(json.RawMessage(tc.Function.Arguments))
-				if execErr != nil {
-					toolResult = "error: " + execErr.Error()
-				} else {
-					toolResult = res
-				}
+			if execErr != nil {
+				toolResult = "error: " + execErr.Error()
 			} else {
-				toolResult = fmt.Sprintf("error: unknown tool %q", tc.Function.Name)
+				toolResult = res
 			}
 
 			if verboseTools {
@@ -325,7 +375,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 }
 
-func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64) (string, error) {
+func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -390,12 +440,51 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 		{Role: "user", Content: finalInput},
 	}
 
-	result, err := doStream(cfg.BaseURL, modelID, messages, nil, cfg.Limit.Output, showThinking, contentOut)
-	if err != nil {
-		return "", fmt.Errorf("final synthesis: %w", err)
+	// Merge MCP tools for final synthesis (custom prompts may reference them)
+	var toolDefs []tools.Definition
+	var execTool toolExecFunc
+	if mcpMgr != nil && len(mcpNames) > 0 {
+		toolDefs = mcpMgr.ActiveToolDefs(mcpNames)
+		execTool = makeToolExec(mcpMgr, mcpNames)
 	}
-	fmt.Fprintln(contentOut)
-	return result.Content, nil
+
+	for {
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut)
+		if err != nil {
+			return "", fmt.Errorf("final synthesis: %w", err)
+		}
+
+		if len(result.ToolCalls) == 0 {
+			fmt.Fprintln(contentOut)
+			return result.Content, nil
+		}
+
+		messages = append(messages, Message{
+			Role:      "assistant",
+			Content:   result.Content,
+			ToolCalls: result.ToolCalls,
+		})
+
+		for _, tc := range result.ToolCalls {
+			logf("%s[tool: %s]%s\n", colorCyan, tc.Function.Name, colorReset)
+			var toolResult string
+			if execTool != nil {
+				res, execErr := execTool(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+				if execErr != nil {
+					toolResult = "error: " + execErr.Error()
+				} else {
+					toolResult = res
+				}
+			} else {
+				toolResult = fmt.Sprintf("error: unknown tool %q", tc.Function.Name)
+			}
+			messages = append(messages, Message{
+				Role:       "tool",
+				Content:    toolResult,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
 }
 
 func buildGroupDigestInput(g *tools.SenderGroup) string {
@@ -422,4 +511,23 @@ func buildGroupDigestInput(g *tools.SenderGroup) string {
 		content = content[:60000] + "\n[...truncated]"
 	}
 	return content
+}
+
+// dedup merges two name lists, removing duplicates.
+func dedup(a, b []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
 }

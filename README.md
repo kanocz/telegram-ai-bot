@@ -45,6 +45,30 @@ New format (with language):
 
 Generate a token in Home Assistant: Profile → Security → Long-lived access tokens → Create token.
 
+### mcp.json — MCP servers (optional)
+
+```json
+{
+  "filesystem": {
+    "url": "http://localhost:3001/mcp",
+    "enabled": true,
+    "headers": {}
+  },
+  "github": {
+    "url": "https://api.github.com/mcp",
+    "enabled": false,
+    "headers": {
+      "Authorization": "Bearer ghp_..."
+    }
+  }
+}
+```
+
+- `enabled: true` — tools always available, server initialized at startup
+- `enabled: false` — only activated via `-enable-mcp name` or `/mcp name` prefix
+
+See `mcp.json.example` for a template.
+
 ### telegram.json — Telegram Bot API
 
 ```json
@@ -68,10 +92,10 @@ The `bot` section is optional (only required for `-telegram-bot`).
 ## Usage
 
 ```
-./ai-webfetch [-no-think] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-language lang] [-config path] <query>
+./ai-webfetch [-no-think] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <query>
 ./ai-webfetch -mail-summary [-no-think] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
 ./ai-webfetch -news-summary [-news-urls path] [-no-think] [-quiet] [-telegram] [-language lang] [-config path]
-./ai-webfetch -telegram-bot [-telegram-config path] [-config path]
+./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
 
@@ -90,6 +114,8 @@ The `bot` section is optional (only required for `-telegram-bot`).
 - `-telegram-bot` — run as Telegram webhook bot service (requires `bot` section in `telegram.json`)
 - `-config path` — path to config.json (default `config.json`)
 - `-language lang` — response language (overrides config.json; default `русский`)
+- `-enable-mcp name1,name2` — activate MCP servers for this query (comma-separated)
+- `-mcp-config path` — path to MCP config file (default `mcp.json`)
 - `-export-default-prompts dir` — export default prompts to a directory and exit
 - `-prompts-dir dir` — load prompts from directory (missing files fall back to built-in defaults)
 
@@ -239,7 +265,32 @@ Start the webhook bot:
 Bot commands:
 - `/news` — news digest
 - `/mail [hours]` — mail digest (default 24 hours)
+- `/mcp server1,server2 <query>` — query with MCP tools activated
+- `/mcp server /news` — news digest with MCP tools
+- `/mcp server /mail [hours]` — mail digest with MCP tools
 - any text — free-form query with tool-loop
+
+### MCP tools
+
+Use external tools from MCP servers (requires `mcp.json`):
+
+```bash
+# Activate a disabled MCP server for this query
+./ai-webfetch -enable-mcp github "List open issues in myrepo"
+
+# Using /mcp prefix in query
+./ai-webfetch "/mcp github List open issues in myrepo"
+
+# Multiple servers
+./ai-webfetch -enable-mcp github,filesystem "Find README in myrepo"
+
+# News digest with MCP tools available to sub-agents
+./ai-webfetch -news-summary -enable-mcp search
+```
+
+Servers with `"enabled": true` in `mcp.json` are always available without `-enable-mcp`.
+
+Tool names are prefixed with the server name: `github__list_issues`, `filesystem__read_file`, etc.
 
 ### Smart home
 

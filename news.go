@@ -91,7 +91,7 @@ func sourceName(rawURL string) string {
 	return host
 }
 
-func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), urlsPath string, prompts *Prompts) (string, error) {
+func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), urlsPath string, prompts *Prompts, mcpMgr *MCPManager, mcpNames []string) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -122,7 +122,12 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 
 	// Give sub-agents web_fetch_summarize (context-efficient) instead of raw web_fetch
 	wfsTool, _ := tools.Get("web_fetch_summarize")
-	webFetchDefs := []tools.Definition{wfsTool.Def}
+	subAgentDefs := []tools.Definition{wfsTool.Def}
+	var subAgentExec toolExecFunc
+	if mcpMgr != nil && len(mcpNames) > 0 {
+		subAgentDefs = append(subAgentDefs, mcpMgr.ActiveToolDefs(mcpNames)...)
+		subAgentExec = makeToolExec(mcpMgr, mcpNames)
+	}
 
 	// Per-source sub-agent analysis (sequential — single GPU)
 	progress(fmt.Sprintf("Анализ %d источников через суб-агентов...", ok))
@@ -138,7 +143,7 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 			{Role: "user", Content: fmt.Sprintf("Источник: %s\nURL: %s\n\nСодержимое страницы:\n%s", s.Name, s.URL, s.Content)},
 		}
 
-		digest, err := doSubAgentWithTools(cfg.BaseURL, modelID, messages, webFetchDefs, cfg.Limit.Output, cfg.Limit.Context, 5, 15000, logf)
+		digest, err := doSubAgentWithTools(cfg.BaseURL, modelID, messages, subAgentDefs, cfg.Limit.Output, cfg.Limit.Context, 5, 15000, logf, subAgentExec)
 		if err != nil {
 			progress(fmt.Sprintf("    ошибка: %v", err))
 			s.Content = fmt.Sprintf("(ошибка анализа: %v)", err)

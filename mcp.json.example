@@ -1,0 +1,14 @@
+{
+  "filesystem": {
+    "url": "http://localhost:3001/mcp",
+    "enabled": true,
+    "headers": {}
+  },
+  "github": {
+    "url": "https://api.github.com/mcp",
+    "enabled": false,
+    "headers": {
+      "Authorization": "Bearer ghp_..."
+    }
+  }
+}

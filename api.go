@@ -340,9 +340,20 @@ func capMaxTokens(contextLimit, maxTokens int, messages []Message) int {
 // contextLimit is the model's total context window (0 = no capping).
 // maxToolResultChars limits the size of each tool result to prevent context overflow.
 // The logf callback is used for optional progress output (suppressed in -quiet).
+// toolExecFunc dispatches a tool call by name. Returns result text or error.
+type toolExecFunc func(name string, args json.RawMessage) (string, error)
+
+// defaultToolExec dispatches to built-in tools only.
+func defaultToolExec(name string, args json.RawMessage) (string, error) {
+	if tool, ok := tools.Get(name); ok {
+		return tool.Execute(args)
+	}
+	return "", fmt.Errorf("unknown tool %q", name)
+}
+
 func doSubAgentWithTools(baseURL, model string, messages []Message,
 	toolDefs []tools.Definition, maxTokens, contextLimit, maxRounds, maxToolResultChars int,
-	logf func(string, ...any)) (string, error) {
+	logf func(string, ...any), execTool toolExecFunc) (string, error) {
 
 	for round := 0; round < maxRounds; round++ {
 		effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
@@ -363,19 +374,19 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 		})
 
 		// Execute each tool call
+		exec := execTool
+		if exec == nil {
+			exec = defaultToolExec
+		}
 		for _, tc := range result.ToolCalls {
 			logf("%s  [sub-agent tool: %s]%s\n", colorDim, tc.Function.Name, colorReset)
 
 			var toolResult string
-			if tool, ok := tools.Get(tc.Function.Name); ok {
-				res, execErr := tool.Execute(json.RawMessage(tc.Function.Arguments))
-				if execErr != nil {
-					toolResult = "error: " + execErr.Error()
-				} else {
-					toolResult = res
-				}
+			res, execErr := exec(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+			if execErr != nil {
+				toolResult = "error: " + execErr.Error()
 			} else {
-				toolResult = fmt.Sprintf("error: unknown tool %q", tc.Function.Name)
+				toolResult = res
 			}
 
 			// Truncate tool results to prevent context overflow

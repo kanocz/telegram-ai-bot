@@ -46,6 +46,30 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 
 Токен создаётся в Home Assistant: Профиль → Безопасность → Долгосрочные токены доступа → Создать токен.
 
+### mcp.json — MCP-серверы (опционально)
+
+```json
+{
+  "filesystem": {
+    "url": "http://localhost:3001/mcp",
+    "enabled": true,
+    "headers": {}
+  },
+  "github": {
+    "url": "https://api.github.com/mcp",
+    "enabled": false,
+    "headers": {
+      "Authorization": "Bearer ghp_..."
+    }
+  }
+}
+```
+
+- `enabled: true` — инструменты всегда доступны, сервер инициализируется при старте
+- `enabled: false` — активируется только через `-enable-mcp name` или префикс `/mcp name`
+
+Шаблон: `mcp.json.example`.
+
 ### telegram.json — Telegram Bot API
 
 ```json
@@ -69,10 +93,10 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ## Использование
 
 ```
-./ai-webfetch [-no-think] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-language lang] [-config path] <запрос>
+./ai-webfetch [-no-think] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <запрос>
 ./ai-webfetch -mail-summary [-no-think] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
 ./ai-webfetch -news-summary [-news-urls path] [-no-think] [-quiet] [-telegram] [-language lang] [-config path]
-./ai-webfetch -telegram-bot [-telegram-config path] [-config path]
+./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
 
@@ -91,6 +115,8 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 - `-telegram-bot` — запустить webhook-бот сервис (требуется секция `bot` в `telegram.json`)
 - `-config path` — путь к config.json (по умолчанию `config.json`)
 - `-language lang` — язык ответов (перекрывает значение из config.json; по умолчанию `русский`)
+- `-enable-mcp name1,name2` — активировать MCP-серверы для этого запроса (через запятую)
+- `-mcp-config path` — путь к конфигу MCP (по умолчанию `mcp.json`)
 - `-export-default-prompts dir` — экспортировать дефолтные промпты в директорию и выйти
 - `-prompts-dir dir` — загрузить промпты из директории (отсутствующие файлы → встроенные значения)
 
@@ -240,7 +266,32 @@ https://www.bbc.com/news
 Команды бота:
 - `/news` — дайджест новостей
 - `/mail [часы]` — дайджест почты (по умолчанию 24 часа)
+- `/mcp сервер1,сервер2 <запрос>` — запрос с MCP-инструментами
+- `/mcp сервер /news` — дайджест новостей с MCP-инструментами
+- `/mcp сервер /mail [часы]` — дайджест почты с MCP-инструментами
 - любой текст — свободный запрос с tool-loop
+
+### MCP-инструменты
+
+Использование внешних инструментов через MCP-серверы (требуется `mcp.json`):
+
+```bash
+# Активировать отключённый MCP-сервер для этого запроса
+./ai-webfetch -enable-mcp github "Покажи открытые issues в myrepo"
+
+# Через префикс /mcp в запросе
+./ai-webfetch "/mcp github Покажи открытые issues в myrepo"
+
+# Несколько серверов
+./ai-webfetch -enable-mcp github,filesystem "Найди README в myrepo"
+
+# Дайджест новостей с MCP-инструментами для суб-агентов
+./ai-webfetch -news-summary -enable-mcp search
+```
+
+Серверы с `"enabled": true` в `mcp.json` доступны всегда без `-enable-mcp`.
+
+Имена инструментов содержат префикс сервера: `github__list_issues`, `filesystem__read_file` и т.д.
 
 ### Умный дом
 
