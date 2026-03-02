@@ -66,7 +66,7 @@ func main() {
 	verboseTools := flag.Bool("verbose-tools", false, "show tool call arguments and results")
 	mailSummary := flag.Bool("mail-summary", false, "standalone mail digest: fetch unread, group by sender, categorize")
 	newsSummary := flag.Bool("news-summary", false, "cross-referenced news digest from configured URLs")
-	newsURLs := flag.String("news-urls", "news.urls", "path to file with news URLs (one per line)")
+	newsConfig := flag.String("news-config", "news.json", "path to news config file (JSON with categories)")
 	telegram := flag.Bool("telegram", false, "send output to Telegram instead of stdout")
 	telegramCfgPath := flag.String("telegram-config", "telegram.json", "path to telegram config file")
 	telegramChatID := flag.Int64("telegram-chatid", 0, "override Telegram chat ID for this invocation")
@@ -231,7 +231,7 @@ func main() {
 			return result, nil
 		}
 
-		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output)
+		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context)
 	}
 
 	// Parse /mcp prefix from query and merge with flag names
@@ -266,7 +266,7 @@ func main() {
 	}
 
 	if *newsSummary {
-		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsURLs, &prompts, mcpMgr, mcpNames)
+		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
 			os.Exit(1)
@@ -283,7 +283,7 @@ func main() {
 	}
 
 	if *telegramBot {
-		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsURLs, mcpMgr); err != nil {
+		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsConfig, mcpMgr); err != nil {
 			fmt.Fprintf(os.Stderr, "bot error: %v\n", err)
 			os.Exit(1)
 		}

@@ -111,7 +111,7 @@ func startTyping(token string, chatID int64) (cancel func()) {
 
 func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsURLsPath string, mcpMgr *MCPManager) error {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager) error {
 
 	if tgCfg.Bot == nil {
 		return fmt.Errorf("telegram config: 'bot' section is required for -telegram-bot")
@@ -177,7 +177,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(msg.Text, 100))
 
 		// Process asynchronously
-		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsURLsPath, mcpMgr, msg)
+		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsConfigPath, mcpMgr, msg)
 	})
 
 	server := &http.Server{
@@ -215,7 +215,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 
 func handleBotMessage(token string, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsURLsPath string, mcpMgr *MCPManager, msg *TGMessage) {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, msg *TGMessage) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -248,7 +248,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
-		result, err = runNewsSummary(cfg, modelID, showThinking, io.Discard, logf, newsURLsPath, prompts, mcpMgr, mcpNames)
+		result, err = runNewsSummary(cfg, modelID, showThinking, io.Discard, logf, newsConfigPath, prompts, mcpMgr, mcpNames)
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0

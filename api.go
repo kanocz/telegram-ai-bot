@@ -413,12 +413,14 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 }
 
 // doChat makes a non-streaming chat completion call (used by sub-agents).
-func doChat(baseURL, model string, messages []Message, maxTokens int) (string, error) {
+// contextLimit is the model's total context window (0 = no capping).
+func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit int) (string, error) {
+	effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  messages,
 		Stream:    false,
-		MaxTokens: maxTokens,
+		MaxTokens: effectiveMax,
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {

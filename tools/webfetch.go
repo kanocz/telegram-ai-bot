@@ -67,15 +67,39 @@ func init() {
 
 // FetchURL fetches the given URL and returns its content as markdown.
 // HTML pages are converted to markdown; other content is returned as-is.
+// consentCookies maps host substrings to cookie headers that bypass consent walls.
+var consentCookies = map[string]string{
+	"idnes.cz": "dCMP=gemius=1",
+}
+
 func FetchURL(rawURL string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(rawURL)
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("request error: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	// Apply consent cookies for known domains
+	if u, err := url.Parse(rawURL); err == nil {
+		host := u.Hostname()
+		for domain, cookie := range consentCookies {
+			if strings.HasSuffix(host, domain) {
+				req.Header.Set("Cookie", cookie)
+				break
+			}
+		}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch error: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
 		return "", fmt.Errorf("read error: %w", err)
 	}

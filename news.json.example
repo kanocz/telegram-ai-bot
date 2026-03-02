@@ -1,0 +1,72 @@
+[
+  {
+    "name": "Czech",
+    "header": "🇨🇿 Чехия",
+    "filter": "Только новости о Чехии и внутренней политике Чехии. Игнорируй международные новости, если они не касаются Чехии напрямую.",
+    "urls": [
+      "https://www.novinky.cz/sekce/domaci-13",
+      "https://www.idnes.cz/zpravy/domaci",
+      "https://www.seznamzpravy.cz/"
+    ]
+  },
+  {
+    "name": "Europe",
+    "header": "🇪🇺 Европа",
+    "filter": "Только новости о Европе и европейских странах. Из источников с мировыми новостями выбирай только то, что касается Европы.",
+    "urls": [
+      "https://www.novinky.cz/sekce/zahranicni-7",
+      "https://www.idnes.cz/zpravy/zahranicni",
+      "https://edition.cnn.com/world/europe",
+      "https://www.bbc.com/news/world/europe",
+      "https://www.scmp.com/news/world/europe?module=sub_section_menu&pgtype=section",
+      "https://www.reuters.com/world/europe/",
+      "https://www.nbcnews.com/news/europe",
+      "https://www.chinadaily.com.cn/world/europe",
+      "https://www.seznamzpravy.cz/sekce/zahranicni-11"
+    ]
+  },
+  {
+    "name": "War",
+    "header": "⚔️ Война",
+    "filter": "Только новости о войне и военных конфликтах.",
+    "urls": [
+      "https://www.novinky.cz/sekce/zahranicni-7",
+      "https://www.novinky.cz/sekce/valka-na-ukrajine-358",
+      "https://ua.korrespondent.net/world/",
+      "https://edition.cnn.com/world",
+      "https://www.bbc.com/news",
+      "https://www.nbcnews.com/world",
+      "https://www.scmp.com/news/world?module=oneline_menu_section_int&pgtype=homepage",
+      "https://www.chinadaily.com.cn/china"
+    ]
+  },
+  {
+    "name": "Economics",
+    "header": "💰 Экономика",
+    "filter": "Только экономические и финансовые новости: рынки, бизнес, торговля, валюты, инфляция.",
+    "urls": [
+      "https://www.reuters.com/markets/",
+      "https://www.novinky.cz/sekce/ekonomika-10",
+      "https://www.idnes.cz/ekonomika",
+      "https://edition.cnn.com/business",
+      "https://www.chinadaily.com.cn/business",
+      "https://www.scmp.com/economy?module=oneline_menu_section_int&pgtype=homepage"
+    ]
+  },
+  {
+    "name": "World",
+    "header": "🌍 Мир",
+    "filter": "Международные новости за пределами Европы: Азия, Америка, Ближний Восток, Африка. Не дублируй европейские новости.",
+    "urls": [
+      "https://edition.cnn.com/world",
+      "https://edition.cnn.com/world/china",
+      "https://www.scmp.com/news/world?module=oneline_menu_section_int&pgtype=homepage",
+      "https://www.reuters.com/world/china/",
+      "https://www.reuters.com/world/japan/",
+      "https://www.nbcnews.com/world",
+      "https://www.chinadaily.com.cn/china",
+      "https://www.chinadaily.com.cn/world/america",
+      "https://www.bbc.com/news"
+    ]
+  }
+]
