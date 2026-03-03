@@ -348,7 +348,16 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			_ = sendToChat(token, chatID, query)
 			return
 		}
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, io.Discard, logf, prompts, mcpMgr, mcpNames, disableThinking, images)
+		var contentBuf strings.Builder
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, &contentBuf, logf, prompts, mcpMgr, mcpNames, disableThinking, images)
+		// runQuery returns only the last round's content; contentBuf has
+		// accumulated content from ALL rounds (including intermediate tool-calling
+		// rounds). Use it as fallback when the final response is empty.
+		if err == nil && strings.TrimSpace(stripThinkTags(result)) == "" {
+			if s := strings.TrimSpace(contentBuf.String()); s != "" {
+				result = s
+			}
+		}
 	}
 
 	if err != nil {
@@ -357,7 +366,11 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		return
 	}
 
-	if err := sendToChat(token, chatID, stripThinkTags(result)); err != nil {
+	reply := stripThinkTags(result)
+	if strings.TrimSpace(reply) == "" {
+		reply = "(Модель не вернула текстовый ответ — возможно, tool-вызов остался в reasoning. Попробуйте /nothink.)"
+	}
+	if err := sendToChat(token, chatID, reply); err != nil {
 		log.Printf("Error sending response to chat %d: %v", chatID, err)
 	}
 }

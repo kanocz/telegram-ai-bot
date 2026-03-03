@@ -174,6 +174,7 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 	}
 	hadReasoning := false
 	reasoningDim := false
+	var reasoningBuf strings.Builder
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
@@ -197,6 +198,7 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 			// Reasoning content (e.g. Qwen3 thinking via vLLM)
 			if ch.Delta.ReasoningContent != nil && *ch.Delta.ReasoningContent != "" {
 				hadReasoning = true
+				reasoningBuf.WriteString(*ch.Delta.ReasoningContent)
 				if showThinking {
 					if !reasoningDim {
 						fmt.Fprint(os.Stderr, colorDim)
@@ -258,6 +260,15 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 	for i := 0; i < len(tcMap); i++ {
 		if tc, ok := tcMap[i]; ok {
 			result.ToolCalls = append(result.ToolCalls, *tc)
+		}
+	}
+
+	// If no API tool calls, try parsing from text (reasoning + content)
+	if len(result.ToolCalls) == 0 {
+		src := result.Content + "\n" + reasoningBuf.String()
+		if parsed := parseTextToolCalls(src); len(parsed) > 0 {
+			result.ToolCalls = parsed
+			result.Content = strings.TrimSpace(reToolCallBlock.ReplaceAllString(result.Content, ""))
 		}
 	}
 
@@ -517,6 +528,73 @@ var reThinkTags = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
 
 func stripThinkTags(s string) string {
 	return strings.TrimSpace(reThinkTags.ReplaceAllString(s, ""))
+}
+
+// reToolCallBlock extracts <tool_call>...</tool_call> blocks from text.
+var reToolCallBlock = regexp.MustCompile(`(?s)<tool_call>\s*(.*?)\s*</tool_call>`)
+
+// reXMLFunction parses <function=name> blocks inside a tool_call.
+var reXMLFunction = regexp.MustCompile(`(?s)<function=([^>]+)>\s*(.*?)\s*</function>`)
+
+// reXMLParameter parses <parameter=key>value</parameter> inside a function block.
+var reXMLParameter = regexp.MustCompile(`(?s)<parameter=([^>]+)>\s*(.*?)\s*</parameter>`)
+
+// parseTextToolCalls extracts tool calls from text containing <tool_call> blocks.
+// Supports two formats: JSON (Qwen standard) and XML (<function=...><parameter=...>).
+func parseTextToolCalls(text string) []ToolCall {
+	matches := reToolCallBlock.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var calls []ToolCall
+	for i, m := range matches {
+		body := m[1]
+
+		// Try JSON format first: {"name": "func_name", "arguments": {...}}
+		var jsonCall struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(body), &jsonCall); err == nil && jsonCall.Name != "" {
+			args, _ := json.Marshal(jsonCall.Arguments)
+			calls = append(calls, ToolCall{
+				ID:   fmt.Sprintf("text_tc_%d", i),
+				Type: "function",
+				Function: FuncCall{
+					Name:      jsonCall.Name,
+					Arguments: string(args),
+				},
+			})
+			continue
+		}
+
+		// Try XML format: <function=name><parameter=key>value</parameter></function>
+		fnMatch := reXMLFunction.FindStringSubmatch(body)
+		if fnMatch == nil {
+			continue
+		}
+		funcName := fnMatch[1]
+		paramBlock := fnMatch[2]
+		params := map[string]string{}
+		for _, pm := range reXMLParameter.FindAllStringSubmatch(paramBlock, -1) {
+			params[pm[1]] = pm[2]
+		}
+		args, _ := json.Marshal(params)
+		calls = append(calls, ToolCall{
+			ID:   fmt.Sprintf("text_tc_%d", i),
+			Type: "function",
+			Function: FuncCall{
+				Name:      funcName,
+				Arguments: string(args),
+			},
+		})
+	}
+
+	if len(calls) == 0 {
+		return nil
+	}
+	return calls
 }
 
 // prefixWriter writes to w, prepending prefix at the start of every line.
