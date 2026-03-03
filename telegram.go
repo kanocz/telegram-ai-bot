@@ -135,38 +135,78 @@ func sendTypingAction(token string, chatID int64) error {
 	return nil
 }
 
-// markdownToTelegramHTML converts common markdown to Telegram-supported HTML.
-// Telegram supports: <b>, <i>, <code>, <pre>, <a>, <s>, <u>, <blockquote>
-func markdownToTelegramHTML(text string) string {
-	// Escape HTML entities first
-	text = strings.ReplaceAll(text, "&", "&amp;")
-	text = strings.ReplaceAll(text, "<", "&lt;")
-	text = strings.ReplaceAll(text, ">", "&gt;")
+// escapeHTML escapes &, < and > for Telegram HTML parse mode.
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
 
-	var lines []string
-	for _, line := range strings.Split(text, "\n") {
+// markdownToTelegramHTML converts common markdown to Telegram-supported HTML.
+// Handles fenced code blocks (```), inline code, bold, italic, and headers.
+func markdownToTelegramHTML(text string) string {
+	lines := strings.Split(text, "\n")
+	var out []string
+	var codeLines []string
+	inCodeBlock := false
+	codeBlockLang := ""
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Fenced code block delimiter
+		if strings.HasPrefix(trimmed, "```") {
+			if !inCodeBlock {
+				inCodeBlock = true
+				codeBlockLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				codeLines = nil
+			} else {
+				code := escapeHTML(strings.Join(codeLines, "\n"))
+				if codeBlockLang != "" {
+					out = append(out, fmt.Sprintf("<pre><code class=\"language-%s\">%s</code></pre>", escapeHTML(codeBlockLang), code))
+				} else {
+					out = append(out, "<pre>"+code+"</pre>")
+				}
+				inCodeBlock = false
+			}
+			continue
+		}
+
+		if inCodeBlock {
+			codeLines = append(codeLines, line)
+			continue
+		}
+
+		// Normal line: escape HTML, then apply markdown formatting
+		line = escapeHTML(line)
+
 		// Headers: ## text → <b>text</b>
-		if trimmed := strings.TrimLeft(line, "#"); len(trimmed) < len(line) {
-			trimmed = strings.TrimSpace(trimmed)
-			if trimmed != "" {
-				lines = append(lines, "<b>"+trimmed+"</b>")
+		if hdr := strings.TrimLeft(line, "#"); len(hdr) < len(line) {
+			hdr = strings.TrimSpace(hdr)
+			if hdr != "" {
+				out = append(out, "<b>"+hdr+"</b>")
 				continue
 			}
 		}
-		lines = append(lines, line)
+
+		// Inline code: `text` → <code>text</code>
+		line = reInlineCode.ReplaceAllString(line, "<code>$1</code>")
+		// Bold: **text** → <b>text</b>
+		line = reBold.ReplaceAllString(line, "<b>$1</b>")
+		// Italic: *text* → <i>text</i> (but not ** which is bold)
+		line = reItalic.ReplaceAllString(line, "${1}<i>$2</i>")
+
+		out = append(out, line)
 	}
-	text = strings.Join(lines, "\n")
 
-	// Inline code: `text` → <code>text</code>
-	text = reInlineCode.ReplaceAllString(text, "<code>$1</code>")
+	// Unclosed code block — emit what we have
+	if inCodeBlock {
+		code := escapeHTML(strings.Join(codeLines, "\n"))
+		out = append(out, "<pre>"+code+"</pre>")
+	}
 
-	// Bold: **text** → <b>text</b>
-	text = reBold.ReplaceAllString(text, "<b>$1</b>")
-
-	// Italic: *text* → <i>text</i> (but not ** which is bold)
-	text = reItalic.ReplaceAllString(text, "${1}<i>$2</i>")
-
-	return text
+	return strings.Join(out, "\n")
 }
 
 var (
