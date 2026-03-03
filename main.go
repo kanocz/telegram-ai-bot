@@ -82,7 +82,27 @@ func main() {
 	enableMCP := flag.String("enable-mcp", "", "activate MCP servers by name (comma-separated)")
 	mcpConfigPath := flag.String("mcp-config", "mcp.json", "path to MCP server config file")
 	imageFile := flag.String("image", "", "path to image file to attach to query (vision)")
+	filesystemRoot := flag.String("filesystem", "", "enable filesystem tools sandboxed to this directory")
+	filesystemRW := flag.Bool("filesystem-rw", false, "enable write filesystem tools (requires -filesystem)")
+	gitFlag := flag.Bool("git", false, "enable git history tools (repo = -filesystem dir, or cwd)")
+	gitDir := flag.String("git-dir", "", "enable git history tools on this repo (implies -git)")
 	flag.Parse()
+
+	// Register filesystem and git tools
+	if *filesystemRoot != "" {
+		tools.RegisterFilesystem(*filesystemRoot, *filesystemRW)
+	}
+	if *gitDir != "" || *gitFlag {
+		repoPath := *gitDir
+		if repoPath == "" {
+			if *filesystemRoot != "" {
+				repoPath = *filesystemRoot
+			} else {
+				repoPath, _ = os.Getwd()
+			}
+		}
+		tools.RegisterGit(repoPath)
+	}
 
 	// Reset terminal colors on Ctrl+C (interactive mode only)
 	if !*telegramBot {
