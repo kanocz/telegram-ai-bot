@@ -92,9 +92,9 @@ The `bot` section is optional (only required for `-telegram-bot`).
 ## Usage
 
 ```
-./ai-webfetch [-no-think] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <query>
-./ai-webfetch -mail-summary [-no-think] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
-./ai-webfetch -news-summary [-news-urls path] [-no-think] [-quiet] [-telegram] [-language lang] [-config path]
+./ai-webfetch [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-image path] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <query>
+./ai-webfetch -mail-summary [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
+./ai-webfetch -news-summary [-news-urls path] [-no-think] [-disable-thinking] [-quiet] [-telegram] [-language lang] [-config path]
 ./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
@@ -102,11 +102,13 @@ The `bot` section is optional (only required for `-telegram-bot`).
 ### Flags
 
 - `-no-think` — hide model thinking output (shown dimmed by default)
+- `-disable-thinking` — disable model thinking/reasoning entirely (sends `enable_thinking: false` to the API); also forces `-no-think`
 - `-show-subagents` — show sub-agent activity: input, thinking, and output (indented with ` | `)
 - `-verbose-tools` — show tool call arguments and results (results truncated to 500 chars)
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
 - `-news-summary` — cross-referenced news digest: load URLs from file, sub-agents analyze each source (with `web_fetch` access), final summary grouped by events with Europe focus
 - `-news-urls path` — path to file with news site URLs (default `news.urls`)
+- `-image path` — attach an image file to the query (vision); the image is sent as a base64 data URI
 - `-quiet` — suppress all non-error output (for cron); implies `-no-think`
 - `-telegram` — send output to Telegram instead of stdout (requires `telegram.json`)
 - `-telegram-config path` — path to Telegram config (default `telegram.json`)
@@ -265,10 +267,14 @@ Start the webhook bot:
 Bot commands:
 - `/news` — news digest
 - `/mail [hours]` — mail digest (default 24 hours)
+- `/nothink <query>` — disable model thinking for this query
 - `/mcp server1,server2 <query>` — query with MCP tools activated
 - `/mcp server /news` — news digest with MCP tools
 - `/mcp server /mail [hours]` — mail digest with MCP tools
 - any text — free-form query with tool-loop
+- photo with caption — vision query (caption is the prompt; no caption = "Describe this image")
+
+Prefixes can be combined: `/nothink /mcp github what's new?`
 
 ### MCP tools
 
@@ -291,6 +297,35 @@ Use external tools from MCP servers (requires `mcp.json`):
 Servers with `"enabled": true` in `mcp.json` are always available without `-enable-mcp`.
 
 Tool names are prefixed with the server name: `github__list_issues`, `filesystem__read_file`, etc.
+
+### Disabling thinking
+
+Some models (e.g. Qwen3) support a thinking/reasoning mode. You can disable it:
+
+```bash
+# Via CLI flag (global)
+./ai-webfetch -disable-thinking "query"
+./ai-webfetch -disable-thinking -news-summary
+
+# Via /nothink prefix (per-query)
+./ai-webfetch "/nothink what is 2+2?"
+
+# Combined with /mcp
+./ai-webfetch "/nothink /mcp github what's new?"
+```
+
+For `-news-summary`, thinking is automatically disabled for Phase 1 (headline extraction) and Phase 2 (topic clustering) regardless of flags; Phase 3 (deep dive) respects the flag.
+
+### Image (vision)
+
+Attach an image to a query for vision-capable models:
+
+```bash
+./ai-webfetch -image photo.jpg "What's in this image?"
+./ai-webfetch -disable-thinking -image screenshot.png "Describe what you see"
+```
+
+In Telegram bot mode, send a photo with an optional caption (the caption is used as the prompt). If no caption is provided, the bot uses a default prompt to describe the image.
 
 ### Smart home
 

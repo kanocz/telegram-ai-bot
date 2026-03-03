@@ -14,12 +14,56 @@ import (
 	"ai-webfetch/tools"
 )
 
+// ImageURL holds a data-URI for an inline image.
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
 // Message represents a chat message in OpenAI format.
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Images     []ImageURL `json:"-"` // vision images; handled by MarshalJSON
+}
+
+// MarshalJSON implements custom JSON marshaling for Message.
+// When Images is empty, Content is serialized as a plain string (backward-compatible).
+// When Images is present, Content becomes an array of content blocks.
+func (m Message) MarshalJSON() ([]byte, error) {
+	if len(m.Images) == 0 {
+		// Standard encoding — same as default struct marshal.
+		type plain Message // avoid recursion
+		return json.Marshal(plain(m))
+	}
+
+	type contentBlock struct {
+		Type     string    `json:"type"`
+		Text     string    `json:"text,omitempty"`
+		ImageURL *ImageURL `json:"image_url,omitempty"`
+	}
+
+	blocks := []contentBlock{{Type: "text", Text: m.Content}}
+	for i := range m.Images {
+		blocks = append(blocks, contentBlock{
+			Type:     "image_url",
+			ImageURL: &m.Images[i],
+		})
+	}
+
+	type alias struct {
+		Role       string         `json:"role"`
+		Content    []contentBlock `json:"content"`
+		ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
+		ToolCallID string         `json:"tool_call_id,omitempty"`
+	}
+	return json.Marshal(alias{
+		Role:       m.Role,
+		Content:    blocks,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+	})
 }
 
 // ToolCall represents a tool invocation requested by the model.
@@ -36,11 +80,12 @@ type FuncCall struct {
 }
 
 type chatRequest struct {
-	Model     string             `json:"model"`
-	Messages  []Message          `json:"messages"`
-	Tools     []tools.Definition `json:"tools,omitempty"`
-	Stream    bool               `json:"stream"`
-	MaxTokens int                `json:"max_tokens,omitempty"`
+	Model             string             `json:"model"`
+	Messages          []Message          `json:"messages"`
+	Tools             []tools.Definition `json:"tools,omitempty"`
+	Stream            bool               `json:"stream"`
+	MaxTokens         int                `json:"max_tokens,omitempty"`
+	ChatTemplateKwargs map[string]any    `json:"chat_template_kwargs,omitempty"`
 }
 
 type streamDelta struct {
@@ -85,13 +130,16 @@ const (
 
 // doStream sends a streaming chat completion request and displays the response.
 // If toolDefs is nil, the request is sent without tools (pure generation).
-func doStream(baseURL, model string, messages []Message, toolDefs []tools.Definition, maxTokens int, showThinking bool, contentOut io.Writer) (*StreamResult, error) {
+func doStream(baseURL, model string, messages []Message, toolDefs []tools.Definition, maxTokens int, showThinking bool, contentOut io.Writer, disableThinking bool) (*StreamResult, error) {
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  messages,
 		Tools:     toolDefs,
 		Stream:    true,
 		MaxTokens: maxTokens,
+	}
+	if disableThinking {
+		reqBody.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -311,6 +359,7 @@ func estimateTokens(messages []Message) int {
 		for _, tc := range m.ToolCalls {
 			chars += len(tc.Function.Name) + len(tc.Function.Arguments) + 20
 		}
+		chars += len(m.Images) * 3000 // ~1000 tokens per image (× 3 chars/token)
 	}
 	return chars/3 + 50 // +50 for message framing overhead
 }
@@ -353,11 +402,11 @@ func defaultToolExec(name string, args json.RawMessage) (string, error) {
 
 func doSubAgentWithTools(baseURL, model string, messages []Message,
 	toolDefs []tools.Definition, maxTokens, contextLimit, maxRounds, maxToolResultChars int,
-	logf func(string, ...any), execTool toolExecFunc) (string, error) {
+	logf func(string, ...any), execTool toolExecFunc, disableThinking bool) (string, error) {
 
 	for round := 0; round < maxRounds; round++ {
 		effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
-		result, err := doStream(baseURL, model, messages, toolDefs, effectiveMax, false, io.Discard)
+		result, err := doStream(baseURL, model, messages, toolDefs, effectiveMax, false, io.Discard, disableThinking)
 		if err != nil {
 			return "", fmt.Errorf("round %d: %w", round, err)
 		}
@@ -405,7 +454,7 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 	// Max rounds exceeded — force text response by calling without tools
 	logf("%s  [sub-agent: max rounds reached, forcing text]%s\n", colorDim, colorReset)
 	effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
-	result, err := doStream(baseURL, model, messages, nil, effectiveMax, false, io.Discard)
+	result, err := doStream(baseURL, model, messages, nil, effectiveMax, false, io.Discard, disableThinking)
 	if err != nil {
 		return "", fmt.Errorf("final round: %w", err)
 	}
@@ -414,13 +463,16 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 
 // doChat makes a non-streaming chat completion call (used by sub-agents).
 // contextLimit is the model's total context window (0 = no capping).
-func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit int) (string, error) {
+func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit int, disableThinking bool) (string, error) {
 	effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  messages,
 		Stream:    false,
 		MaxTokens: effectiveMax,
+	}
+	if disableThinking {
+		reqBody.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -494,12 +546,15 @@ func (pw *prefixWriter) WriteString(s string) {
 // doSubAgentStream runs a streaming chat completion for a sub-agent,
 // displaying all output (thinking + content) on stderr via prefixWriter.
 // Returns the clean content (thinking stripped).
-func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, pw *prefixWriter) (string, error) {
+func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, pw *prefixWriter, disableThinking bool) (string, error) {
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  messages,
 		Stream:    true,
 		MaxTokens: maxTokens,
+	}
+	if disableThinking {
+		reqBody.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {

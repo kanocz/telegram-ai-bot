@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -62,6 +64,7 @@ func main() {
 	// so we can check -telegram-bot.
 
 	noThink := flag.Bool("no-think", false, "hide model thinking output")
+	disableThinkingFlag := flag.Bool("disable-thinking", false, "disable model thinking/reasoning")
 	showSubAgents := flag.Bool("show-subagents", false, "show sub-agent input, thinking, and output")
 	verboseTools := flag.Bool("verbose-tools", false, "show tool call arguments and results")
 	mailSummary := flag.Bool("mail-summary", false, "standalone mail digest: fetch unread, group by sender, categorize")
@@ -78,6 +81,7 @@ func main() {
 	promptsDir := flag.String("prompts-dir", "", "load prompts from directory (missing files use defaults)")
 	enableMCP := flag.String("enable-mcp", "", "activate MCP servers by name (comma-separated)")
 	mcpConfigPath := flag.String("mcp-config", "mcp.json", "path to MCP server config file")
+	imageFile := flag.String("image", "", "path to image file to attach to query (vision)")
 	flag.Parse()
 
 	// Reset terminal colors on Ctrl+C (interactive mode only)
@@ -102,7 +106,7 @@ func main() {
 	}
 
 	if !*mailSummary && !*newsSummary && !*telegramBot && flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-no-think] [-quiet] [-mail-summary] [-news-summary] [-telegram] [-telegram-bot] [-language lang] [-config path] <query>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [-no-think] [-disable-thinking] [-quiet] [-mail-summary] [-news-summary] [-telegram] [-telegram-bot] [-image path] [-language lang] [-config path] <query>\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -166,7 +170,14 @@ func main() {
 	applyLanguage(&prompts, language)
 	installToolPrompts(&prompts)
 
+	// Parse /nothink prefix from query (before /mcp)
+	noThinkPrefix, query := parseNothinkPrefix(query)
+	thinkingDisabled := *disableThinkingFlag || noThinkPrefix
+
 	showThinking := !*noThink && !*quiet
+	if thinkingDisabled {
+		showThinking = false
+	}
 
 	// Load MCP config (optional — nil if no config file)
 	var mcpMgr *MCPManager
@@ -222,7 +233,7 @@ func main() {
 			pw.WriteString(colorDim + "Input: " + input + colorReset + "\n")
 			pw.WriteString("\n")
 
-			result, err := doSubAgentStream(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, pw)
+			result, err := doSubAgentStream(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, pw, thinkingDisabled)
 			if err != nil {
 				return "", err
 			}
@@ -231,7 +242,7 @@ func main() {
 			return result, nil
 		}
 
-		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context)
+		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, thinkingDisabled)
 	}
 
 	// Parse /mcp prefix from query and merge with flag names
@@ -249,7 +260,7 @@ func main() {
 	}
 
 	if *mailSummary {
-		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames)
+		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames, thinkingDisabled)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mail summary error: %v\n", err)
 			os.Exit(1)
@@ -266,7 +277,7 @@ func main() {
 	}
 
 	if *newsSummary {
-		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames)
+		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, thinkingDisabled)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
 			os.Exit(1)
@@ -283,7 +294,7 @@ func main() {
 	}
 
 	if *telegramBot {
-		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsConfig, mcpMgr); err != nil {
+		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsConfig, mcpMgr, thinkingDisabled); err != nil {
 			fmt.Fprintf(os.Stderr, "bot error: %v\n", err)
 			os.Exit(1)
 		}
@@ -291,7 +302,18 @@ func main() {
 	}
 
 	defer tools.HAClose()
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames)
+
+	var images []ImageURL
+	if *imageFile != "" {
+		dataURL, imgErr := loadImageDataURL(*imageFile)
+		if imgErr != nil {
+			fmt.Fprintf(os.Stderr, "image error: %v\n", imgErr)
+			os.Exit(1)
+		}
+		images = append(images, ImageURL{URL: dataURL})
+	}
+
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, thinkingDisabled, images)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
@@ -310,7 +332,8 @@ func main() {
 func runQuery(cfg modelConfig, modelID string, query string,
 	showThinking, verboseTools bool, contentOut io.Writer,
 	logf func(string, ...any), prompts *Prompts,
-	mcpMgr *MCPManager, mcpNames []string) (string, error) {
+	mcpMgr *MCPManager, mcpNames []string, disableThinking bool,
+	images []ImageURL) (string, error) {
 
 	// Merge built-in + MCP tool definitions
 	toolDefs := tools.All()
@@ -319,13 +342,14 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 	execTool := makeToolExec(mcpMgr, mcpNames)
 
+	userMsg := Message{Role: "user", Content: query, Images: images}
 	messages := []Message{
 		{Role: "system", Content: prompts.SystemPrompt},
-		{Role: "user", Content: query},
+		userMsg,
 	}
 
 	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut)
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, disableThinking)
 		if err != nil {
 			return "", err
 		}
@@ -375,7 +399,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 }
 
-func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string) (string, error) {
+func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string, disableThinking bool) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -449,7 +473,7 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 	}
 
 	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut)
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, disableThinking)
 		if err != nil {
 			return "", fmt.Errorf("final synthesis: %w", err)
 		}
@@ -511,6 +535,17 @@ func buildGroupDigestInput(g *tools.SenderGroup) string {
 		content = content[:60000] + "\n[...truncated]"
 	}
 	return content
+}
+
+// loadImageDataURL reads an image file and returns a data URI (data:image/...;base64,...).
+func loadImageDataURL(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read image: %w", err)
+	}
+	mime := http.DetectContentType(data)
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mime, b64), nil
 }
 
 // dedup merges two name lists, removing duplicates.

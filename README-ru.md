@@ -93,9 +93,9 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ## Использование
 
 ```
-./ai-webfetch [-no-think] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <запрос>
-./ai-webfetch -mail-summary [-no-think] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
-./ai-webfetch -news-summary [-news-urls path] [-no-think] [-quiet] [-telegram] [-language lang] [-config path]
+./ai-webfetch [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-image path] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <запрос>
+./ai-webfetch -mail-summary [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
+./ai-webfetch -news-summary [-news-urls path] [-no-think] [-disable-thinking] [-quiet] [-telegram] [-language lang] [-config path]
 ./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
@@ -103,11 +103,13 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ### Флаги
 
 - `-no-think` — скрыть thinking-вывод модели (по умолчанию показывается серым)
+- `-disable-thinking` — полностью отключить thinking/reasoning модели (отправляет `enable_thinking: false` в API); также подразумевает `-no-think`
 - `-show-subagents` — показать работу суб-агентов: вход, thinking, ответ (с отступом ` | `)
 - `-verbose-tools` — показать аргументы вызова и результат каждого tool (результат обрезается до 500 символов)
 - `-mail-summary` — автономный дайджест почты: получить непрочитанные, сгруппировать по отправителям, категоризировать (без tool-loop)
 - `-news-summary` — кросс-референсный дайджест новостей: загрузить URL из файла, суб-агенты анализируют каждый источник (с доступом к `web_fetch`), финальная сводка с группировкой по событиям и фокусом на Европу
 - `-news-urls path` — путь к файлу с URL новостных сайтов (по умолчанию `news.urls`)
+- `-image path` — прикрепить изображение к запросу (vision); изображение отправляется как base64 data URI
 - `-quiet` — подавить весь не-ошибочный вывод (для cron); подразумевает `-no-think`
 - `-telegram` — отправить результат в Telegram вместо вывода в stdout (требуется `telegram.json`)
 - `-telegram-config path` — путь к конфигу Telegram (по умолчанию `telegram.json`)
@@ -266,10 +268,14 @@ https://www.bbc.com/news
 Команды бота:
 - `/news` — дайджест новостей
 - `/mail [часы]` — дайджест почты (по умолчанию 24 часа)
+- `/nothink <запрос>` — отключить thinking модели для этого запроса
 - `/mcp сервер1,сервер2 <запрос>` — запрос с MCP-инструментами
 - `/mcp сервер /news` — дайджест новостей с MCP-инструментами
 - `/mcp сервер /mail [часы]` — дайджест почты с MCP-инструментами
 - любой текст — свободный запрос с tool-loop
+- фото с подписью — vision-запрос (подпись = промпт; без подписи = «Опиши это изображение»)
+
+Префиксы можно комбинировать: `/nothink /mcp github что нового?`
 
 ### MCP-инструменты
 
@@ -292,6 +298,35 @@ https://www.bbc.com/news
 Серверы с `"enabled": true` в `mcp.json` доступны всегда без `-enable-mcp`.
 
 Имена инструментов содержат префикс сервера: `github__list_issues`, `filesystem__read_file` и т.д.
+
+### Отключение thinking
+
+Некоторые модели (например Qwen3) поддерживают режим thinking/reasoning. Его можно отключить:
+
+```bash
+# Через флаг CLI (глобально)
+./ai-webfetch -disable-thinking "запрос"
+./ai-webfetch -disable-thinking -news-summary
+
+# Через префикс /nothink (per-query)
+./ai-webfetch "/nothink сколько будет 2+2?"
+
+# В комбинации с /mcp
+./ai-webfetch "/nothink /mcp github что нового?"
+```
+
+Для `-news-summary` thinking автоматически отключается на фазах 1 (извлечение заголовков) и 2 (кластеризация по темам) вне зависимости от флагов; фаза 3 (deep dive) учитывает флаг.
+
+### Изображения (vision)
+
+Прикрепить изображение к запросу для моделей с поддержкой vision:
+
+```bash
+./ai-webfetch -image photo.jpg "Что на этом изображении?"
+./ai-webfetch -disable-thinking -image screenshot.png "Опиши что видишь"
+```
+
+В режиме Telegram-бота отправьте фото с подписью (caption используется как промпт). Если подписи нет, бот использует промпт по умолчанию для описания изображения.
 
 ### Умный дом
 

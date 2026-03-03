@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,12 +31,21 @@ type TGChat struct {
 	Type string `json:"type"`
 }
 
+type TGPhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size,omitempty"`
+}
+
 type TGMessage struct {
-	MessageID int64   `json:"message_id"`
-	From      *TGUser `json:"from,omitempty"`
-	Chat      TGChat  `json:"chat"`
-	Date      int64   `json:"date"`
-	Text      string  `json:"text,omitempty"`
+	MessageID int64         `json:"message_id"`
+	From      *TGUser       `json:"from,omitempty"`
+	Chat      TGChat        `json:"chat"`
+	Date      int64         `json:"date"`
+	Text      string        `json:"text,omitempty"`
+	Photo     []TGPhotoSize `json:"photo,omitempty"`
+	Caption   string        `json:"caption,omitempty"`
 }
 
 type Update struct {
@@ -109,9 +119,47 @@ func startTyping(token string, chatID int64) (cancel func()) {
 	return func() { close(done) }
 }
 
+// downloadTelegramFile downloads a file by file_id via the Bot API.
+func downloadTelegramFile(token, fileID string) ([]byte, error) {
+	// Step 1: getFile to obtain file_path
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, url.QueryEscape(fileID))
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("getFile request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("getFile decode: %w", err)
+	}
+	if !result.OK || result.Result.FilePath == "" {
+		return nil, fmt.Errorf("getFile: no file_path returned")
+	}
+
+	// Step 2: download the file
+	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, result.Result.FilePath)
+	fileResp, err := http.Get(fileURL)
+	if err != nil {
+		return nil, fmt.Errorf("download file: %w", err)
+	}
+	defer fileResp.Body.Close()
+
+	data, err := io.ReadAll(fileResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read file body: %w", err)
+	}
+	return data, nil
+}
+
 func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager) error {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, disableThinking bool) error {
 
 	if tgCfg.Bot == nil {
 		return fmt.Errorf("telegram config: 'bot' section is required for -telegram-bot")
@@ -157,7 +205,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		w.WriteHeader(http.StatusOK)
 
 		msg := update.Message
-		if msg == nil || msg.Text == "" {
+		if msg == nil || (msg.Text == "" && len(msg.Photo) == 0) {
 			return
 		}
 
@@ -174,10 +222,14 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 				userLabel += " @" + msg.From.Username
 			}
 		}
-		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(msg.Text, 100))
+		logText := msg.Text
+		if logText == "" && len(msg.Photo) > 0 {
+			logText = "[photo] " + msg.Caption
+		}
+		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(logText, 100))
 
 		// Process asynchronously
-		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsConfigPath, mcpMgr, msg)
+		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsConfigPath, mcpMgr, disableThinking, msg)
 	})
 
 	server := &http.Server{
@@ -215,7 +267,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 
 func handleBotMessage(token string, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, msg *TGMessage) {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalDisableThinking bool, msg *TGMessage) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -228,7 +280,36 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	cancel := startTyping(token, chatID)
 	defer cancel()
 
+	// Use Caption as text when message has photo
 	text := strings.TrimSpace(msg.Text)
+	if text == "" && len(msg.Photo) > 0 {
+		text = strings.TrimSpace(msg.Caption)
+	}
+
+	// Download photo if present
+	var images []ImageURL
+	if len(msg.Photo) > 0 {
+		// Telegram sends multiple sizes; last element is the largest
+		best := msg.Photo[len(msg.Photo)-1]
+		data, dlErr := downloadTelegramFile(token, best.FileID)
+		if dlErr != nil {
+			log.Printf("Error downloading photo for message %d: %v", msg.MessageID, dlErr)
+			_ = sendToChat(token, chatID, fmt.Sprintf("Ошибка загрузки фото: %v", dlErr))
+			return
+		}
+		mime := http.DetectContentType(data)
+		b64 := base64.StdEncoding.EncodeToString(data)
+		images = append(images, ImageURL{URL: fmt.Sprintf("data:%s;base64,%s", mime, b64)})
+
+		// Default prompt if no caption
+		if text == "" {
+			text = "Опиши это изображение."
+		}
+	}
+
+	// Parse /nothink prefix (before /mcp)
+	noThinkPrefix, text := parseNothinkPrefix(text)
+	disableThinking := globalDisableThinking || noThinkPrefix
 
 	// Parse /mcp prefix (works for all commands: /mcp github /news, /mcp github query, etc.)
 	mcpNames, text := parseMCPPrefix(text)
@@ -248,7 +329,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
-		result, err = runNewsSummary(cfg, modelID, showThinking, io.Discard, logf, newsConfigPath, prompts, mcpMgr, mcpNames)
+		result, err = runNewsSummary(cfg, modelID, showThinking, io.Discard, logf, newsConfigPath, prompts, mcpMgr, mcpNames, disableThinking)
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0
@@ -258,16 +339,16 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 				sinceHours = h
 			}
 		}
-		result, err = runMailSummary(cfg, modelID, showThinking, io.Discard, logf, prompts, sinceHours, mcpMgr, mcpNames)
+		result, err = runMailSummary(cfg, modelID, showThinking, io.Discard, logf, prompts, sinceHours, mcpMgr, mcpNames, disableThinking)
 
 	default:
 		query := text
 		if query == "/start" || query == "/help" {
-			query = "Привет! Чем могу помочь? Доступные команды: /news — дайджест новостей, /mail [часы] — дайджест почты, /mcp сервер запрос — с MCP-инструментами, или отправь любой вопрос."
+			query = "Привет! Чем могу помочь? Доступные команды: /news — дайджест новостей, /mail [часы] — дайджест почты, /mcp сервер запрос — с MCP-инструментами, /nothink — отключить reasoning, или отправь любой вопрос."
 			_ = sendToChat(token, chatID, query)
 			return
 		}
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, io.Discard, logf, prompts, mcpMgr, mcpNames)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, io.Discard, logf, prompts, mcpMgr, mcpNames, disableThinking, images)
 	}
 
 	if err != nil {
