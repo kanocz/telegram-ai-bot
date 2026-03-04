@@ -92,9 +92,9 @@ The `bot` section is optional (only required for `-telegram-bot`).
 ## Usage
 
 ```
-./ai-webfetch [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-image path] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <query>
-./ai-webfetch -mail-summary [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
-./ai-webfetch -news-summary [-news-urls path] [-no-think] [-disable-thinking] [-quiet] [-telegram] [-language lang] [-config path]
+./ai-webfetch [flags] <query>
+./ai-webfetch -mail-summary [flags]
+./ai-webfetch -news-summary [-news-config path] [flags]
 ./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
@@ -107,7 +107,7 @@ The `bot` section is optional (only required for `-telegram-bot`).
 - `-verbose-tools` — show tool call arguments and results (results truncated to 500 chars)
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
 - `-news-summary` — cross-referenced news digest: load URLs from file, sub-agents analyze each source (with `web_fetch` access), final summary grouped by events with Europe focus
-- `-news-urls path` — path to file with news site URLs (default `news.urls`)
+- `-news-config path` — path to news config file (default `news.json`)
 - `-image path` — attach an image file to the query (vision); the image is sent as a base64 data URI
 - `-quiet` — suppress all non-error output (for cron); implies `-no-think`
 - `-telegram` — send output to Telegram instead of stdout (requires `telegram.json`)
@@ -118,6 +118,12 @@ The `bot` section is optional (only required for `-telegram-bot`).
 - `-language lang` — response language (overrides config.json; default `русский`)
 - `-enable-mcp name1,name2` — activate MCP servers for this query (comma-separated)
 - `-mcp-config path` — path to MCP config file (default `mcp.json`)
+- `-skills name1,name2` — activate skills by name (comma-separated); also available as `/skills name1,name2` query prefix
+- `-skills-dir path` — override skills directory (default: searches multiple locations, see below)
+- `-filesystem path` — enable filesystem tools (`file_read`, `file_list`, `file_tree`) sandboxed to this directory
+- `-filesystem-rw` — also enable write tools (`file_write`, `file_patch`); requires `-filesystem`
+- `-git` — enable git history tools (`git_log`, `git_show`, `git_diff`); repo = `-filesystem` dir or cwd
+- `-git-dir path` — enable git history tools on a specific repo (implies `-git`)
 - `-export-default-prompts dir` — export default prompts to a directory and exit
 - `-prompts-dir dir` — load prompts from directory (missing files fall back to built-in defaults)
 
@@ -134,6 +140,17 @@ The `bot` section is optional (only required for `-telegram-bot`).
 | `ha_list` | Discover Home Assistant areas (with aliases) and entities in an area |
 | `ha_state` | Detailed entity state with domain-specific attributes |
 | `ha_call` | Call a Home Assistant service (turn on/off, set temperature, etc.) |
+| `fs_list` | List directory contents (requires `-filesystem`) |
+| `fs_read` | Read file contents (requires `-filesystem`) |
+| `fs_info` | File/directory metadata (requires `-filesystem`) |
+| `fs_write` | Write file (requires `-filesystem -filesystem-rw`) |
+| `fs_append` | Append to file (requires `-filesystem -filesystem-rw`) |
+| `fs_patch` | Patch file with search/replace (requires `-filesystem -filesystem-rw`) |
+| `fs_mkdir` | Create directory (requires `-filesystem -filesystem-rw`) |
+| `fs_rm` | Remove file/directory (requires `-filesystem -filesystem-rw`) |
+| `git_log` | Git commit history (requires `-git`) |
+| `git_show` | Show commit details (requires `-git`) |
+| `git_diff` | Diff between commits/refs (requires `-git`) |
 
 ## Prompt customization
 
@@ -203,21 +220,12 @@ runs a sub-agent on each group, then performs final categorization:
 
 ### News — cross-referenced digest
 
-Loads URLs from `news.urls`, sub-agents analyze each source (with ability to open full articles via `web_fetch`), then produces a final summary grouped by events:
+Sub-agents analyze each news source (with ability to open full articles via `web_fetch`), then produces a final summary grouped by events:
 
 ```bash
 ./ai-webfetch -news-summary
-./ai-webfetch -news-summary -news-urls my-urls.txt
+./ai-webfetch -news-summary -news-config my-news.json
 ./ai-webfetch -news-summary -quiet -telegram    # cron mode
-```
-
-`news.urls` file format:
-
-```
-# Comments start with #
-https://www.novinky.cz/
-https://www.chinadaily.com.cn/world/europe
-https://www.bbc.com/news
 ```
 
 ### Mail — full digest with conversation history
@@ -271,10 +279,11 @@ Bot commands:
 - `/mcp server1,server2 <query>` — query with MCP tools activated
 - `/mcp server /news` — news digest with MCP tools
 - `/mcp server /mail [hours]` — mail digest with MCP tools
+- `/skills name1,name2 <query>` — query with skills injected into system prompt
 - any text — free-form query with tool-loop
 - photo with caption — vision query (caption is the prompt; no caption = "Describe this image")
 
-Prefixes can be combined: `/nothink /mcp github what's new?`
+Prefixes can be combined: `/nothink /skills code-review /mcp github what's new?`
 
 ### MCP tools
 
@@ -297,6 +306,40 @@ Use external tools from MCP servers (requires `mcp.json`):
 Servers with `"enabled": true` in `mcp.json` are always available without `-enable-mcp`.
 
 Tool names are prefixed with the server name: `github__list_issues`, `filesystem__read_file`, etc.
+
+### Skills
+
+Skills are markdown instruction files that get injected into the system prompt, giving the model additional instructions or context.
+
+A skill can be either a flat file (`name.md`) or a directory with `SKILL.md` inside (`name/SKILL.md`).
+
+Search directories (first match wins):
+
+**Global** (from `$HOME`):
+- `~/.claude/skills/`
+- `~/.agents/skills/`
+- `~/.copilot/skills/`
+
+**Local** (from working directory):
+- `.github/skills/`
+- `.claude/skills/`
+- `.agents/skills/`
+
+Use `-skills-dir path` to override and search only in a specific directory.
+
+```bash
+# Activate a skill via CLI flag
+./ai-webfetch -skills code-review "make code review"
+
+# Multiple skills
+./ai-webfetch -skills code-review,haiku "review my code"
+
+# Via /skills prefix in query
+./ai-webfetch "/skills code-review make code review"
+
+# Combined with other prefixes
+./ai-webfetch "/nothink /skills haiku hello"
+```
 
 ### Disabling thinking
 

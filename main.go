@@ -86,6 +86,8 @@ func main() {
 	filesystemRW := flag.Bool("filesystem-rw", false, "enable write filesystem tools (requires -filesystem)")
 	gitFlag := flag.Bool("git", false, "enable git history tools (repo = -filesystem dir, or cwd)")
 	gitDir := flag.String("git-dir", "", "enable git history tools on this repo (implies -git)")
+	skillsFlag := flag.String("skills", "", "activate skills by name (comma-separated)")
+	skillsDirFlag := flag.String("skills-dir", "", "override skills directory (default: ~/.claude/skills)")
 	flag.Parse()
 
 	// Register filesystem and git tools
@@ -126,7 +128,35 @@ func main() {
 	}
 
 	if !*mailSummary && !*newsSummary && !*telegramBot && flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-no-think] [-disable-thinking] [-quiet] [-mail-summary] [-news-summary] [-telegram] [-telegram-bot] [-image path] [-language lang] [-config path] <query>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <query>\n\n"+
+			"Modes:\n"+
+			"  -mail-summary          standalone mail digest\n"+
+			"  -news-summary          cross-referenced news digest\n"+
+			"  -telegram-bot          run as Telegram webhook bot\n"+
+			"  -export-default-prompts dir  export prompts and exit\n\n"+
+			"Common flags:\n"+
+			"  -config path           config file (default config.json)\n"+
+			"  -language lang         response language (default русский)\n"+
+			"  -no-think              hide thinking output\n"+
+			"  -disable-thinking      disable thinking entirely\n"+
+			"  -quiet                 suppress non-error output (for cron)\n"+
+			"  -show-subagents        show sub-agent activity\n"+
+			"  -verbose-tools         show tool args and results\n"+
+			"  -image path            attach image (vision)\n"+
+			"  -skills name1,name2    activate skills (or /skills prefix)\n"+
+			"  -skills-dir path       override skills search directory\n"+
+			"  -enable-mcp name1,name2  activate MCP servers (or /mcp prefix)\n"+
+			"  -mcp-config path       MCP config file (default mcp.json)\n"+
+			"  -filesystem path       enable filesystem tools sandboxed to path\n"+
+			"  -filesystem-rw         enable write filesystem tools\n"+
+			"  -git                   enable git history tools\n"+
+			"  -git-dir path          enable git tools on specific repo\n"+
+			"  -prompts-dir dir       load custom prompts from directory\n"+
+			"  -telegram              send output to Telegram\n"+
+			"  -telegram-config path  Telegram config (default telegram.json)\n"+
+			"  -telegram-chatid id    override Telegram chat ID\n"+
+			"  -news-config path      news config file (default news.json)\n",
+			os.Args[0])
 		os.Exit(1)
 	}
 
@@ -193,6 +223,33 @@ func main() {
 	// Parse /nothink prefix from query (before /mcp)
 	noThinkPrefix, query := parseNothinkPrefix(query)
 	thinkingDisabled := *disableThinkingFlag || noThinkPrefix
+
+	// Parse /skills prefix and merge with flag names
+	skillsPrefixNames, query := parseSkillsPrefix(query)
+	var flagSkillNames []string
+	if *skillsFlag != "" {
+		for _, n := range strings.Split(*skillsFlag, ",") {
+			n = strings.TrimSpace(n)
+			if n != "" {
+				flagSkillNames = append(flagSkillNames, n)
+			}
+		}
+	}
+	skillNames := dedup(flagSkillNames, skillsPrefixNames)
+	if len(skillNames) > 0 {
+		var skillDirs []string
+		if *skillsDirFlag != "" {
+			skillDirs = []string{*skillsDirFlag}
+		} else {
+			skillDirs = skillSearchDirs()
+		}
+		skillText, err := loadSkills(skillDirs, skillNames)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skills error: %v\n", err)
+			os.Exit(1)
+		}
+		prompts.SystemPrompt += skillText
+	}
 
 	showThinking := !*noThink && !*quiet
 	if thinkingDisabled {

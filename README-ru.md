@@ -93,9 +93,9 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ## Использование
 
 ```
-./ai-webfetch [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-verbose-tools] [-telegram] [-image path] [-language lang] [-config path] [-enable-mcp name1,name2] [-mcp-config path] <запрос>
-./ai-webfetch -mail-summary [-no-think] [-disable-thinking] [-quiet] [-show-subagents] [-telegram] [-language lang] [-config path]
-./ai-webfetch -news-summary [-news-urls path] [-no-think] [-disable-thinking] [-quiet] [-telegram] [-language lang] [-config path]
+./ai-webfetch [flags] <запрос>
+./ai-webfetch -mail-summary [flags]
+./ai-webfetch -news-summary [-news-config path] [flags]
 ./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
@@ -108,7 +108,7 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 - `-verbose-tools` — показать аргументы вызова и результат каждого tool (результат обрезается до 500 символов)
 - `-mail-summary` — автономный дайджест почты: получить непрочитанные, сгруппировать по отправителям, категоризировать (без tool-loop)
 - `-news-summary` — кросс-референсный дайджест новостей: загрузить URL из файла, суб-агенты анализируют каждый источник (с доступом к `web_fetch`), финальная сводка с группировкой по событиям и фокусом на Европу
-- `-news-urls path` — путь к файлу с URL новостных сайтов (по умолчанию `news.urls`)
+- `-news-config path` — путь к конфигу новостей (по умолчанию `news.json`)
 - `-image path` — прикрепить изображение к запросу (vision); изображение отправляется как base64 data URI
 - `-quiet` — подавить весь не-ошибочный вывод (для cron); подразумевает `-no-think`
 - `-telegram` — отправить результат в Telegram вместо вывода в stdout (требуется `telegram.json`)
@@ -119,6 +119,12 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 - `-language lang` — язык ответов (перекрывает значение из config.json; по умолчанию `русский`)
 - `-enable-mcp name1,name2` — активировать MCP-серверы для этого запроса (через запятую)
 - `-mcp-config path` — путь к конфигу MCP (по умолчанию `mcp.json`)
+- `-skills name1,name2` — активировать скиллы по имени (через запятую); также доступно как префикс `/skills name1,name2` в запросе
+- `-skills-dir path` — переопределить директорию скиллов (по умолчанию: поиск в нескольких местах, см. ниже)
+- `-filesystem path` — включить инструменты файловой системы (`file_read`, `file_list`, `file_tree`) в песочнице указанной директории
+- `-filesystem-rw` — также включить инструменты записи (`file_write`, `file_patch`); требует `-filesystem`
+- `-git` — включить инструменты git-истории (`git_log`, `git_show`, `git_diff`); репозиторий = директория `-filesystem` или cwd
+- `-git-dir path` — включить git-инструменты для конкретного репозитория (подразумевает `-git`)
 - `-export-default-prompts dir` — экспортировать дефолтные промпты в директорию и выйти
 - `-prompts-dir dir` — загрузить промпты из директории (отсутствующие файлы → встроенные значения)
 
@@ -135,6 +141,17 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 | `ha_list` | Обнаружение зон Home Assistant (с алиасами) и устройств в зоне |
 | `ha_state` | Детальное состояние устройства с атрибутами по домену |
 | `ha_call` | Вызов сервиса Home Assistant (включить/выключить, задать температуру и т.д.) |
+| `fs_list` | Список содержимого директории (требует `-filesystem`) |
+| `fs_read` | Чтение файла (требует `-filesystem`) |
+| `fs_info` | Метаданные файла/директории (требует `-filesystem`) |
+| `fs_write` | Запись файла (требует `-filesystem -filesystem-rw`) |
+| `fs_append` | Дозапись в файл (требует `-filesystem -filesystem-rw`) |
+| `fs_patch` | Патч файла поиском/заменой (требует `-filesystem -filesystem-rw`) |
+| `fs_mkdir` | Создание директории (требует `-filesystem -filesystem-rw`) |
+| `fs_rm` | Удаление файла/директории (требует `-filesystem -filesystem-rw`) |
+| `git_log` | История коммитов (требует `-git`) |
+| `git_show` | Детали коммита (требует `-git`) |
+| `git_diff` | Diff между коммитами/ветками (требует `-git`) |
 
 ## Кастомизация промптов
 
@@ -204,21 +221,12 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 
 ### Новости — кросс-референсный дайджест
 
-Загружает URL из файла `news.urls`, суб-агенты анализируют каждый источник (с возможностью открывать полные статьи через `web_fetch`), затем финальная сводка с группировкой по событиям:
+Суб-агенты анализируют каждый источник (с возможностью открывать полные статьи через `web_fetch`), затем финальная сводка с группировкой по событиям:
 
 ```bash
 ./ai-webfetch -news-summary
-./ai-webfetch -news-summary -news-urls my-urls.txt
+./ai-webfetch -news-summary -news-config my-news.json
 ./ai-webfetch -news-summary -quiet -telegram    # cron-режим
-```
-
-Формат файла `news.urls`:
-
-```
-# Комментарии начинаются с #
-https://www.novinky.cz/
-https://www.chinadaily.com.cn/world/europe
-https://www.bbc.com/news
 ```
 
 ### Почта — полный дайджест с историей переписки
@@ -272,10 +280,11 @@ https://www.bbc.com/news
 - `/mcp сервер1,сервер2 <запрос>` — запрос с MCP-инструментами
 - `/mcp сервер /news` — дайджест новостей с MCP-инструментами
 - `/mcp сервер /mail [часы]` — дайджест почты с MCP-инструментами
+- `/skills имя1,имя2 <запрос>` — запрос с добавлением скиллов в системный промпт
 - любой текст — свободный запрос с tool-loop
 - фото с подписью — vision-запрос (подпись = промпт; без подписи = «Опиши это изображение»)
 
-Префиксы можно комбинировать: `/nothink /mcp github что нового?`
+Префиксы можно комбинировать: `/nothink /skills code-review /mcp github что нового?`
 
 ### MCP-инструменты
 
@@ -298,6 +307,40 @@ https://www.bbc.com/news
 Серверы с `"enabled": true` в `mcp.json` доступны всегда без `-enable-mcp`.
 
 Имена инструментов содержат префикс сервера: `github__list_issues`, `filesystem__read_file` и т.д.
+
+### Скиллы (skills)
+
+Скиллы — markdown-файлы с инструкциями, которые добавляются в системный промпт, давая модели дополнительные инструкции или контекст.
+
+Скилл может быть как отдельным файлом (`name.md`), так и директорией с `SKILL.md` внутри (`name/SKILL.md`).
+
+Директории поиска (первое совпадение побеждает):
+
+**Глобальные** (от `$HOME`):
+- `~/.claude/skills/`
+- `~/.agents/skills/`
+- `~/.copilot/skills/`
+
+**Локальные** (от рабочей директории):
+- `.github/skills/`
+- `.claude/skills/`
+- `.agents/skills/`
+
+Флаг `-skills-dir path` переопределяет поиск — будет искать только в указанной директории.
+
+```bash
+# Активация скилла через флаг CLI
+./ai-webfetch -skills code-review "сделай код ревью"
+
+# Несколько скиллов
+./ai-webfetch -skills code-review,haiku "проверь мой код"
+
+# Через префикс /skills в запросе
+./ai-webfetch "/skills code-review сделай код ревью"
+
+# В комбинации с другими префиксами
+./ai-webfetch "/nothink /skills haiku привет"
+```
 
 ### Отключение thinking
 
