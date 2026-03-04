@@ -136,6 +136,7 @@ type StreamResult struct {
 }
 
 var requestDebug bool
+var quietMode bool
 var reBase64Data = regexp.MustCompile(`(base64,)[A-Za-z0-9+/=]{200,}`)
 
 func dumpRequestDebug(url string, payload []byte) {

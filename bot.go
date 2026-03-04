@@ -410,9 +410,15 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	var result string
 	var err error
 
+	// Content output: stderr for debugging (unless quiet)
+	var debugOut io.Writer = io.Discard
+	if !quietMode {
+		debugOut = os.Stderr
+	}
+
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
-		result, err = runNewsSummary(cfg, modelID, showThinking, io.Discard, logf, newsConfigPath, prompts, mcpMgr, mcpNames, disableThinking)
+		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, prompts, mcpMgr, mcpNames, disableThinking)
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0
@@ -422,7 +428,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 				sinceHours = h
 			}
 		}
-		result, err = runMailSummary(cfg, modelID, showThinking, io.Discard, logf, prompts, sinceHours, mcpMgr, mcpNames, disableThinking)
+		result, err = runMailSummary(cfg, modelID, showThinking, debugOut, logf, prompts, sinceHours, mcpMgr, mcpNames, disableThinking)
 
 	default:
 		query := text
@@ -432,7 +438,8 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			return
 		}
 		var contentBuf strings.Builder
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, &contentBuf, logf, prompts, mcpMgr, mcpNames, disableThinking, images, videos)
+		contentOut := io.MultiWriter(&contentBuf, debugOut)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, prompts, mcpMgr, mcpNames, disableThinking, images, videos)
 		// runQuery returns only the last round's content; contentBuf has
 		// accumulated content from ALL rounds (including intermediate tool-calling
 		// rounds). Use it as fallback when the final response is empty.

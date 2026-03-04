@@ -95,6 +95,7 @@ func main() {
 	flag.Parse()
 
 	requestDebug = *requestDebugFlag
+	quietMode = *quiet
 
 	// Register filesystem and git tools
 	if *filesystemRoot != "" {
@@ -134,36 +135,8 @@ func main() {
 	}
 
 	if !*mailSummary && !*newsSummary && !*telegramBot && flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <query>\n\n"+
-			"Modes:\n"+
-			"  -mail-summary          standalone mail digest\n"+
-			"  -news-summary          cross-referenced news digest\n"+
-			"  -telegram-bot          run as Telegram webhook bot\n"+
-			"  -export-default-prompts dir  export prompts and exit\n\n"+
-			"Common flags:\n"+
-			"  -config path           config file (default config.json)\n"+
-			"  -language lang         response language (default русский)\n"+
-			"  -no-think              hide thinking output\n"+
-			"  -disable-thinking      disable thinking entirely\n"+
-			"  -quiet                 suppress non-error output (for cron)\n"+
-			"  -show-subagents        show sub-agent activity\n"+
-			"  -verbose-tools         show tool args and results\n"+
-			"  -image path            attach image (vision)\n"+
-			"  -video path            attach video (vision)\n"+
-			"  -skills name1,name2    activate skills (or /skills prefix)\n"+
-			"  -skills-dir path       override skills search directory\n"+
-			"  -enable-mcp name1,name2  activate MCP servers (or /mcp prefix)\n"+
-			"  -mcp-config path       MCP config file (default mcp.json)\n"+
-			"  -filesystem path       enable filesystem tools sandboxed to path\n"+
-			"  -filesystem-rw         enable write filesystem tools\n"+
-			"  -git                   enable git history tools\n"+
-			"  -git-dir path          enable git tools on specific repo\n"+
-			"  -prompts-dir dir       load custom prompts from directory\n"+
-			"  -telegram              send output to Telegram\n"+
-			"  -telegram-config path  Telegram config (default telegram.json)\n"+
-			"  -telegram-chatid id    override Telegram chat ID\n"+
-			"  -news-config path      news config file (default news.json)\n",
-			os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <query>\n\nFlags:\n", os.Args[0])
+		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
