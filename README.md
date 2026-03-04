@@ -109,6 +109,7 @@ The `bot` section is optional (only required for `-telegram-bot`).
 - `-news-summary` — cross-referenced news digest: load URLs from file, sub-agents analyze each source (with `web_fetch` access), final summary grouped by events with Europe focus
 - `-news-config path` — path to news config file (default `news.json`)
 - `-image path` — attach an image file to the query (vision); the image is sent as a base64 data URI
+- `-video path` — attach a video file to the query (vision); the video is sent as a base64 data URI
 - `-quiet` — suppress all non-error output (for cron); implies `-no-think`
 - `-telegram` — send output to Telegram instead of stdout (requires `telegram.json`)
 - `-telegram-config path` — path to Telegram config (default `telegram.json`)
@@ -282,6 +283,7 @@ Bot commands:
 - `/skills name1,name2 <query>` — query with skills injected into system prompt
 - any text — free-form query with tool-loop
 - photo with caption — vision query (caption is the prompt; no caption = "Describe this image")
+- video with caption — vision query (caption is the prompt; no caption = "Describe this video")
 
 Prefixes can be combined: `/nothink /skills code-review /mcp github what's new?`
 
@@ -369,6 +371,17 @@ Attach an image to a query for vision-capable models:
 ```
 
 In Telegram bot mode, send a photo with an optional caption (the caption is used as the prompt). If no caption is provided, the bot uses a default prompt to describe the image.
+
+### Video (vision)
+
+Attach a video to a query for vision-capable models:
+
+```bash
+./ai-webfetch -video clip.mp4 "What happens in this video?"
+./ai-webfetch -disable-thinking -video recording.mp4 "Describe what you see"
+```
+
+In Telegram bot mode, send a video or video note with an optional caption. If no caption is provided, the bot uses a default prompt to describe the video.
 
 ### Smart home
 

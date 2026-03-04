@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 
 	"ai-webfetch/tools"
@@ -67,6 +69,7 @@ func main() {
 	disableThinkingFlag := flag.Bool("disable-thinking", false, "disable model thinking/reasoning")
 	showSubAgents := flag.Bool("show-subagents", false, "show sub-agent input, thinking, and output")
 	verboseTools := flag.Bool("verbose-tools", false, "show tool call arguments and results")
+	requestDebugFlag := flag.Bool("request-debug", false, "dump API request JSON to stderr (base64 data truncated)")
 	mailSummary := flag.Bool("mail-summary", false, "standalone mail digest: fetch unread, group by sender, categorize")
 	newsSummary := flag.Bool("news-summary", false, "cross-referenced news digest from configured URLs")
 	newsConfig := flag.String("news-config", "news.json", "path to news config file (JSON with categories)")
@@ -82,6 +85,7 @@ func main() {
 	enableMCP := flag.String("enable-mcp", "", "activate MCP servers by name (comma-separated)")
 	mcpConfigPath := flag.String("mcp-config", "mcp.json", "path to MCP server config file")
 	imageFile := flag.String("image", "", "path to image file to attach to query (vision)")
+	videoFile := flag.String("video", "", "path to video file to attach to query (vision)")
 	filesystemRoot := flag.String("filesystem", "", "enable filesystem tools sandboxed to this directory")
 	filesystemRW := flag.Bool("filesystem-rw", false, "enable write filesystem tools (requires -filesystem)")
 	gitFlag := flag.Bool("git", false, "enable git history tools (repo = -filesystem dir, or cwd)")
@@ -89,6 +93,8 @@ func main() {
 	skillsFlag := flag.String("skills", "", "activate skills by name (comma-separated)")
 	skillsDirFlag := flag.String("skills-dir", "", "override skills directory (default: ~/.claude/skills)")
 	flag.Parse()
+
+	requestDebug = *requestDebugFlag
 
 	// Register filesystem and git tools
 	if *filesystemRoot != "" {
@@ -143,6 +149,7 @@ func main() {
 			"  -show-subagents        show sub-agent activity\n"+
 			"  -verbose-tools         show tool args and results\n"+
 			"  -image path            attach image (vision)\n"+
+			"  -video path            attach video (vision)\n"+
 			"  -skills name1,name2    activate skills (or /skills prefix)\n"+
 			"  -skills-dir path       override skills search directory\n"+
 			"  -enable-mcp name1,name2  activate MCP servers (or /mcp prefix)\n"+
@@ -382,7 +389,7 @@ func main() {
 
 	var images []ImageURL
 	if *imageFile != "" {
-		dataURL, imgErr := loadImageDataURL(*imageFile)
+		dataURL, imgErr := loadFileDataURL(*imageFile)
 		if imgErr != nil {
 			fmt.Fprintf(os.Stderr, "image error: %v\n", imgErr)
 			os.Exit(1)
@@ -390,7 +397,17 @@ func main() {
 		images = append(images, ImageURL{URL: dataURL})
 	}
 
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, thinkingDisabled, images)
+	var videos []VideoURL
+	if *videoFile != "" {
+		dataURL, vidErr := loadFileDataURL(*videoFile)
+		if vidErr != nil {
+			fmt.Fprintf(os.Stderr, "video error: %v\n", vidErr)
+			os.Exit(1)
+		}
+		videos = append(videos, VideoURL{URL: dataURL})
+	}
+
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, thinkingDisabled, images, videos)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
@@ -410,7 +427,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	showThinking, verboseTools bool, contentOut io.Writer,
 	logf func(string, ...any), prompts *Prompts,
 	mcpMgr *MCPManager, mcpNames []string, disableThinking bool,
-	images []ImageURL) (string, error) {
+	images []ImageURL, videos []VideoURL) (string, error) {
 
 	// Merge built-in + MCP tool definitions
 	toolDefs := tools.All()
@@ -419,7 +436,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 	execTool := makeToolExec(mcpMgr, mcpNames)
 
-	userMsg := Message{Role: "user", Content: query, Images: images}
+	userMsg := Message{Role: "user", Content: query, Images: images, Videos: videos}
 	messages := []Message{
 		{Role: "system", Content: prompts.SystemPrompt},
 		userMsg,
@@ -614,15 +631,20 @@ func buildGroupDigestInput(g *tools.SenderGroup) string {
 	return content
 }
 
-// loadImageDataURL reads an image file and returns a data URI (data:image/...;base64,...).
-func loadImageDataURL(path string) (string, error) {
+// loadFileDataURL reads a file and returns a data URI (data:<mime>;base64,...).
+// MIME is determined from the file extension first (more reliable for video),
+// falling back to http.DetectContentType.
+func loadFileDataURL(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read image: %w", err)
+		return "", fmt.Errorf("read file %s: %w", path, err)
 	}
-	mime := http.DetectContentType(data)
+	mimeType := mime.TypeByExtension(filepath.Ext(path))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
 	b64 := base64.StdEncoding.EncodeToString(data)
-	return fmt.Sprintf("data:%s;base64,%s", mime, b64), nil
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, b64), nil
 }
 
 // dedup merges two name lists, removing duplicates.

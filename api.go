@@ -19,6 +19,11 @@ type ImageURL struct {
 	URL string `json:"url"`
 }
 
+// VideoURL holds a data-URI for an inline video.
+type VideoURL struct {
+	URL string `json:"url"`
+}
+
 // Message represents a chat message in OpenAI format.
 type Message struct {
 	Role       string     `json:"role"`
@@ -26,13 +31,14 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Images     []ImageURL `json:"-"` // vision images; handled by MarshalJSON
+	Videos     []VideoURL `json:"-"` // vision videos; handled by MarshalJSON
 }
 
 // MarshalJSON implements custom JSON marshaling for Message.
 // When Images is empty, Content is serialized as a plain string (backward-compatible).
 // When Images is present, Content becomes an array of content blocks.
 func (m Message) MarshalJSON() ([]byte, error) {
-	if len(m.Images) == 0 {
+	if len(m.Images) == 0 && len(m.Videos) == 0 {
 		// Standard encoding — same as default struct marshal.
 		type plain Message // avoid recursion
 		return json.Marshal(plain(m))
@@ -42,6 +48,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		Type     string    `json:"type"`
 		Text     string    `json:"text,omitempty"`
 		ImageURL *ImageURL `json:"image_url,omitempty"`
+		VideoURL *VideoURL `json:"video_url,omitempty"`
 	}
 
 	blocks := []contentBlock{{Type: "text", Text: m.Content}}
@@ -49,6 +56,12 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		blocks = append(blocks, contentBlock{
 			Type:     "image_url",
 			ImageURL: &m.Images[i],
+		})
+	}
+	for i := range m.Videos {
+		blocks = append(blocks, contentBlock{
+			Type:     "video_url",
+			VideoURL: &m.Videos[i],
 		})
 	}
 
@@ -122,6 +135,15 @@ type StreamResult struct {
 	ToolCalls []ToolCall
 }
 
+var requestDebug bool
+var reBase64Data = regexp.MustCompile(`(base64,)[A-Za-z0-9+/=]{200,}`)
+
+func dumpRequestDebug(url string, payload []byte) {
+	truncated := reBase64Data.ReplaceAllString(string(payload), "${1}[...base64 truncated]")
+	fmt.Fprintf(os.Stderr, "%s--- REQUEST DEBUG ---%s\nPOST %s\n%s\n%s--- END REQUEST DEBUG ---%s\n",
+		colorCyan, colorReset, url, truncated, colorCyan, colorReset)
+}
+
 const (
 	colorDim   = "\033[2m"
 	colorReset = "\033[0m"
@@ -146,7 +168,12 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(payload))
+	apiURL := baseURL + "/chat/completions"
+	if requestDebug {
+		dumpRequestDebug(apiURL, payload)
+	}
+
+	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +397,8 @@ func estimateTokens(messages []Message) int {
 		for _, tc := range m.ToolCalls {
 			chars += len(tc.Function.Name) + len(tc.Function.Arguments) + 20
 		}
-		chars += len(m.Images) * 3000 // ~1000 tokens per image (× 3 chars/token)
+		chars += len(m.Images) * 3000  // ~1000 tokens per image (× 3 chars/token)
+		chars += len(m.Videos) * 30000 // ~10000 tokens per video (× 3 chars/token)
 	}
 	return chars/3 + 50 // +50 for message framing overhead
 }

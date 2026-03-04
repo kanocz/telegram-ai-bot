@@ -38,6 +38,22 @@ type TGPhotoSize struct {
 	FileSize int    `json:"file_size,omitempty"`
 }
 
+type TGVideo struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
+	FileSize int    `json:"file_size,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+}
+
+type TGDocument struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	FileSize int    `json:"file_size,omitempty"`
+}
+
 type TGMessage struct {
 	MessageID int64         `json:"message_id"`
 	From      *TGUser       `json:"from,omitempty"`
@@ -45,7 +61,35 @@ type TGMessage struct {
 	Date      int64         `json:"date"`
 	Text      string        `json:"text,omitempty"`
 	Photo     []TGPhotoSize `json:"photo,omitempty"`
+	Video     *TGVideo      `json:"video,omitempty"`
+	VideoNote *TGVideo      `json:"video_note,omitempty"`
+	Animation *TGVideo      `json:"animation,omitempty"`
+	Document  *TGDocument   `json:"document,omitempty"`
 	Caption   string        `json:"caption,omitempty"`
+}
+
+// hasVideo returns true if the message contains a video in any form
+// (video, video_note, animation, or document with video MIME).
+func (m *TGMessage) hasVideo() bool {
+	if m.Video != nil || m.VideoNote != nil || m.Animation != nil {
+		return true
+	}
+	return m.Document != nil && strings.HasPrefix(m.Document.MimeType, "video/")
+}
+
+// videoFileID returns the file_id and MIME type for the video attachment.
+func (m *TGMessage) videoFileID() (fileID, mime string) {
+	switch {
+	case m.Video != nil:
+		return m.Video.FileID, m.Video.MimeType
+	case m.VideoNote != nil:
+		return m.VideoNote.FileID, m.VideoNote.MimeType
+	case m.Animation != nil:
+		return m.Animation.FileID, m.Animation.MimeType
+	case m.Document != nil && strings.HasPrefix(m.Document.MimeType, "video/"):
+		return m.Document.FileID, m.Document.MimeType
+	}
+	return "", ""
 }
 
 type Update struct {
@@ -195,8 +239,18 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 			return
 		}
 
+		bodyBytes, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
+		}
+
+		if requestDebug {
+			log.Printf("Telegram update: %s", string(bodyBytes))
+		}
+
 		var update Update
-		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		if err := json.Unmarshal(bodyBytes, &update); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -205,7 +259,11 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		w.WriteHeader(http.StatusOK)
 
 		msg := update.Message
-		if msg == nil || (msg.Text == "" && len(msg.Photo) == 0) {
+		if msg == nil || (msg.Text == "" && len(msg.Photo) == 0 && !msg.hasVideo()) {
+			if requestDebug && msg != nil {
+				log.Printf("Message filtered out: text=%q photo=%d video=%v anim=%v doc=%v",
+					msg.Text, len(msg.Photo), msg.Video != nil, msg.Animation != nil, msg.Document != nil)
+			}
 			return
 		}
 
@@ -225,6 +283,9 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		logText := msg.Text
 		if logText == "" && len(msg.Photo) > 0 {
 			logText = "[photo] " + msg.Caption
+		}
+		if logText == "" && msg.hasVideo() {
+			logText = "[video] " + msg.Caption
 		}
 		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(logText, 100))
 
@@ -280,9 +341,9 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	cancel := startTyping(token, chatID)
 	defer cancel()
 
-	// Use Caption as text when message has photo
+	// Use Caption as text when message has photo or video
 	text := strings.TrimSpace(msg.Text)
-	if text == "" && len(msg.Photo) > 0 {
+	if text == "" && (len(msg.Photo) > 0 || msg.hasVideo()) {
 		text = strings.TrimSpace(msg.Caption)
 	}
 
@@ -304,6 +365,28 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		// Default prompt if no caption
 		if text == "" {
 			text = "Опиши это изображение."
+		}
+	}
+
+	// Download video if present (video, video_note, animation, or document with video MIME)
+	var videos []VideoURL
+	if msg.hasVideo() {
+		fileID, mimeType := msg.videoFileID()
+		data, dlErr := downloadTelegramFile(token, fileID)
+		if dlErr != nil {
+			log.Printf("Error downloading video for message %d: %v", msg.MessageID, dlErr)
+			_ = sendToChat(token, chatID, fmt.Sprintf("Ошибка загрузки видео: %v", dlErr))
+			return
+		}
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		b64 := base64.StdEncoding.EncodeToString(data)
+		videos = append(videos, VideoURL{URL: fmt.Sprintf("data:%s;base64,%s", mimeType, b64)})
+
+		// Default prompt if no caption
+		if text == "" {
+			text = "Опиши это видео."
 		}
 	}
 
@@ -349,7 +432,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			return
 		}
 		var contentBuf strings.Builder
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, &contentBuf, logf, prompts, mcpMgr, mcpNames, disableThinking, images)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, &contentBuf, logf, prompts, mcpMgr, mcpNames, disableThinking, images, videos)
 		// runQuery returns only the last round's content; contentBuf has
 		// accumulated content from ALL rounds (including intermediate tool-calling
 		// rounds). Use it as fallback when the final response is empty.
