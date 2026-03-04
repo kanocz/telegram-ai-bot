@@ -54,7 +54,9 @@ func loadTelegramConfig(path string) (*telegramConfig, error) {
 }
 
 // sendTelegramChunk sends a single message chunk to one chat.
-func sendTelegramChunk(token string, chatID int64, text, parseMode string) error {
+// If replyToMsgID is non-zero, the message is sent as a reply.
+// Returns the message_id of the sent message.
+func sendTelegramChunk(token string, chatID int64, text, parseMode string, replyToMsgID int64) (int64, error) {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 
 	vals := url.Values{
@@ -64,30 +66,36 @@ func sendTelegramChunk(token string, chatID int64, text, parseMode string) error
 	if parseMode != "" {
 		vals.Set("parse_mode", parseMode)
 	}
+	if replyToMsgID != 0 {
+		vals.Set("reply_to_message_id", strconv.FormatInt(replyToMsgID, 10))
+	}
 
 	resp, err := http.PostForm(apiURL, vals)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return 0, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
 	}
 
 	var result struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("decode error: %w", err)
+		return 0, fmt.Errorf("decode error: %w", err)
 	}
 	if !result.OK {
-		return fmt.Errorf("API error: %s", result.Description)
+		return 0, fmt.Errorf("API error: %s", result.Description)
 	}
-	return nil
+	return result.Result.MessageID, nil
 }
 
 // sendToChat sends text to a single chat with markdown→HTML conversion + splitting.
@@ -96,11 +104,11 @@ func sendToChat(token string, chatID int64, text string) error {
 	html := markdownToTelegramHTML(text)
 	chunks := splitTelegramMessage(html)
 	for _, chunk := range chunks {
-		if err := sendTelegramChunk(token, chatID, chunk, "HTML"); err != nil {
+		if _, err := sendTelegramChunk(token, chatID, chunk, "HTML", 0); err != nil {
 			// Fallback: send as plain text
 			plain := splitTelegramMessage(text)
 			for j, p := range plain {
-				if err2 := sendTelegramChunk(token, chatID, p, ""); err2 != nil {
+				if _, err2 := sendTelegramChunk(token, chatID, p, "", 0); err2 != nil {
 					return fmt.Errorf("chunk %d/%d (plain fallback): %w", j+1, len(plain), err2)
 				}
 			}
@@ -108,6 +116,42 @@ func sendToChat(token string, chatID int64, text string) error {
 		}
 	}
 	return nil
+}
+
+// sendBotReply sends text as a reply to replyToMsgID and returns the first sent message ID.
+func sendBotReply(token string, chatID int64, text string, replyToMsgID int64) (int64, error) {
+	html := markdownToTelegramHTML(text)
+	chunks := splitTelegramMessage(html)
+	var firstMsgID int64
+	for i, chunk := range chunks {
+		replyID := int64(0)
+		if i == 0 {
+			replyID = replyToMsgID
+		}
+		msgID, err := sendTelegramChunk(token, chatID, chunk, "HTML", replyID)
+		if err != nil {
+			// Fallback: send as plain text
+			plain := splitTelegramMessage(text)
+			for j, p := range plain {
+				rid := int64(0)
+				if j == 0 && firstMsgID == 0 {
+					rid = replyToMsgID
+				}
+				mid, err2 := sendTelegramChunk(token, chatID, p, "", rid)
+				if err2 != nil {
+					return 0, fmt.Errorf("chunk %d/%d (plain fallback): %w", j+1, len(plain), err2)
+				}
+				if firstMsgID == 0 {
+					firstMsgID = mid
+				}
+			}
+			return firstMsgID, nil
+		}
+		if firstMsgID == 0 {
+			firstMsgID = msgID
+		}
+	}
+	return firstMsgID, nil
 }
 
 // sendToChats sends text to multiple chats.

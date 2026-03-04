@@ -287,8 +287,20 @@ Bot commands:
 - any text — free-form query with tool-loop
 - photo with caption — vision query (caption is the prompt; no caption = "Describe this image")
 - video with caption — vision query (caption is the prompt; no caption = "Describe this video")
+- **reply to any message** — continues the conversation with full context
 
 Prefixes can be combined: `/think /skills code-review /mcp github what's new?`
+
+#### Conversation threading
+
+The bot supports conversation threading via Telegram replies. When you reply to a bot message (or your own), the entire reply chain is reconstructed and passed to the AI model as conversation history.
+
+How it works:
+1. You send "What is Python?" — the bot replies with an answer
+2. You reply to the bot's answer with "And Java?" — the bot sees the full chain: your question, its answer, and your follow-up
+3. You can continue replying to build multi-turn conversations (up to 20 messages deep)
+
+The bot always sends its responses as replies to your message, so you can naturally continue any conversation by replying to it. Messages are stored in memory (up to 1000 per chat); if the bot restarts, it can still use the text from Telegram's `reply_to_message` as a one-message fallback.
 
 ### MCP tools
 

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -21,6 +22,7 @@ import (
 
 type TGUser struct {
 	ID        int64  `json:"id"`
+	IsBot     bool   `json:"is_bot"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name,omitempty"`
 	Username  string `json:"username,omitempty"`
@@ -65,7 +67,8 @@ type TGMessage struct {
 	VideoNote *TGVideo      `json:"video_note,omitempty"`
 	Animation *TGVideo      `json:"animation,omitempty"`
 	Document  *TGDocument   `json:"document,omitempty"`
-	Caption   string        `json:"caption,omitempty"`
+	Caption        string        `json:"caption,omitempty"`
+	ReplyToMessage *TGMessage    `json:"reply_to_message,omitempty"`
 }
 
 // hasVideo returns true if the message contains a video in any form
@@ -443,9 +446,37 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			_ = sendToChat(token, chatID, query)
 			return
 		}
+
+		// Store user message for conversation threading
+		var userReplyToMsgID int64
+		if msg.ReplyToMessage != nil {
+			userReplyToMsgID = msg.ReplyToMessage.MessageID
+		}
+		storeMessage(chatID, msg.MessageID, "user", query, userReplyToMsgID)
+
+		// Build conversation chain if this is a reply
+		var history []Message
+		if userReplyToMsgID != 0 {
+			history = buildConversationChain(chatID, userReplyToMsgID)
+			// Fallback: if message not in store, use text from Telegram's reply_to_message
+			if len(history) == 0 && msg.ReplyToMessage != nil {
+				rtText := msg.ReplyToMessage.Text
+				if rtText == "" {
+					rtText = msg.ReplyToMessage.Caption
+				}
+				if rtText != "" {
+					role := "assistant"
+					if msg.ReplyToMessage.From != nil && !msg.ReplyToMessage.From.IsBot {
+						role = "user"
+					}
+					history = []Message{{Role: role, Content: rtText}}
+				}
+			}
+		}
+
 		var contentBuf strings.Builder
 		contentOut := io.MultiWriter(&contentBuf, debugOut)
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, prompts, mcpMgr, mcpNames, think, images, videos)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, prompts, mcpMgr, mcpNames, think, images, videos, history)
 		// runQuery returns only the last round's content; contentBuf has
 		// accumulated content from ALL rounds (including intermediate tool-calling
 		// rounds). Use it as fallback when the final response is empty.
@@ -466,8 +497,11 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	if strings.TrimSpace(reply) == "" {
 		reply = "(Модель не вернула текстовый ответ — возможно, tool-вызов остался в reasoning. Попробуйте /nothink.)"
 	}
-	if err := sendToChat(token, chatID, reply); err != nil {
-		log.Printf("Error sending response to chat %d: %v", chatID, err)
+	sentMsgID, sendErr := sendBotReply(token, chatID, reply, msg.MessageID)
+	if sendErr != nil {
+		log.Printf("Error sending response to chat %d: %v", chatID, sendErr)
+	} else if sentMsgID != 0 {
+		storeMessage(chatID, sentMsgID, "assistant", reply, msg.MessageID)
 	}
 }
 
@@ -476,4 +510,70 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// Conversation threading: in-memory message store.
+
+type storedMessage struct {
+	Role         string // "user" or "assistant"
+	Content      string
+	ReplyToMsgID int64
+}
+
+var botMessages = struct {
+	sync.RWMutex
+	chats map[int64]map[int64]*storedMessage // chatID → messageID → msg
+}{chats: make(map[int64]map[int64]*storedMessage)}
+
+const maxStoredPerChat = 1000
+const maxChainDepth = 20
+
+func storeMessage(chatID, messageID int64, role, content string, replyToMsgID int64) {
+	botMessages.Lock()
+	defer botMessages.Unlock()
+	if botMessages.chats[chatID] == nil {
+		botMessages.chats[chatID] = make(map[int64]*storedMessage)
+	}
+	chat := botMessages.chats[chatID]
+	chat[messageID] = &storedMessage{
+		Role:         role,
+		Content:      content,
+		ReplyToMsgID: replyToMsgID,
+	}
+	// Evict oldest if too many
+	if len(chat) > maxStoredPerChat {
+		var minID int64
+		for id := range chat {
+			if minID == 0 || id < minID {
+				minID = id
+			}
+		}
+		delete(chat, minID)
+	}
+}
+
+func buildConversationChain(chatID, replyToMsgID int64) []Message {
+	botMessages.RLock()
+	defer botMessages.RUnlock()
+	chat := botMessages.chats[chatID]
+	if chat == nil {
+		return nil
+	}
+	var chain []Message
+	seen := make(map[int64]bool)
+	msgID := replyToMsgID
+	for msgID != 0 && !seen[msgID] && len(chain) < maxChainDepth {
+		seen[msgID] = true
+		stored, ok := chat[msgID]
+		if !ok {
+			break
+		}
+		chain = append(chain, Message{Role: stored.Role, Content: stored.Content})
+		msgID = stored.ReplyToMsgID
+	}
+	// Reverse for chronological order
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain
 }

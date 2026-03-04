@@ -390,7 +390,7 @@ func main() {
 		videos = append(videos, VideoURL{URL: dataURL})
 	}
 
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos)
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
@@ -410,7 +410,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	showThinking, verboseTools bool, contentOut io.Writer,
 	logf func(string, ...any), prompts *Prompts,
 	mcpMgr *MCPManager, mcpNames []string, think thinkMode,
-	images []ImageURL, videos []VideoURL) (string, error) {
+	images []ImageURL, videos []VideoURL, history []Message) (string, error) {
 
 	// Merge built-in + MCP tool definitions
 	toolDefs := tools.All()
@@ -422,8 +422,9 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	userMsg := Message{Role: "user", Content: query, Images: images, Videos: videos}
 	messages := []Message{
 		{Role: "system", Content: prompts.SystemPrompt},
-		userMsg,
 	}
+	messages = append(messages, history...)
+	messages = append(messages, userMsg)
 
 	for {
 		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, think)
