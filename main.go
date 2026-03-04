@@ -66,7 +66,8 @@ func main() {
 	// so we can check -telegram-bot.
 
 	noThink := flag.Bool("no-think", false, "hide model thinking output")
-	disableThinkingFlag := flag.Bool("disable-thinking", false, "disable model thinking/reasoning")
+	enableThinkingFlag := flag.Bool("enable-thinking", false, "explicitly enable model thinking/reasoning")
+	thinkFlag := flag.Bool("disable-thinking", false, "disable model thinking/reasoning")
 	showSubAgents := flag.Bool("show-subagents", false, "show sub-agent input, thinking, and output")
 	verboseTools := flag.Bool("verbose-tools", false, "show tool call arguments and results")
 	requestDebugFlag := flag.Bool("request-debug", false, "dump API request JSON to stderr (base64 data truncated)")
@@ -200,9 +201,18 @@ func main() {
 	applyLanguage(&prompts, language)
 	installToolPrompts(&prompts)
 
-	// Parse /nothink prefix from query (before /mcp)
+	// Parse /think and /nothink prefixes from query (before /mcp)
+	thinkPrefix, query := parseThinkPrefix(query)
 	noThinkPrefix, query := parseNothinkPrefix(query)
-	thinkingDisabled := *disableThinkingFlag || noThinkPrefix
+
+	// Determine thinking mode: explicit enable > explicit disable > default
+	think := thinkDefault
+	switch {
+	case *enableThinkingFlag || thinkPrefix:
+		think = thinkEnable
+	case *thinkFlag || noThinkPrefix:
+		think = thinkDisable
+	}
 
 	// Parse /skills prefix and merge with flag names
 	skillsPrefixNames, query := parseSkillsPrefix(query)
@@ -232,7 +242,7 @@ func main() {
 	}
 
 	showThinking := !*noThink && !*quiet
-	if thinkingDisabled {
+	if think == thinkDisable {
 		showThinking = false
 	}
 
@@ -290,7 +300,7 @@ func main() {
 			pw.WriteString(colorDim + "Input: " + input + colorReset + "\n")
 			pw.WriteString("\n")
 
-			result, err := doSubAgentStream(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, pw, thinkingDisabled)
+			result, err := doSubAgentStream(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, pw, think)
 			if err != nil {
 				return "", err
 			}
@@ -299,7 +309,7 @@ func main() {
 			return result, nil
 		}
 
-		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, thinkingDisabled)
+		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, think)
 	}
 
 	// Parse /mcp prefix from query and merge with flag names
@@ -317,7 +327,7 @@ func main() {
 	}
 
 	if *mailSummary {
-		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames, thinkingDisabled)
+		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames, think)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mail summary error: %v\n", err)
 			os.Exit(1)
@@ -334,7 +344,7 @@ func main() {
 	}
 
 	if *newsSummary {
-		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, thinkingDisabled)
+		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
 			os.Exit(1)
@@ -351,7 +361,7 @@ func main() {
 	}
 
 	if *telegramBot {
-		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsConfig, mcpMgr, thinkingDisabled); err != nil {
+		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsConfig, mcpMgr, think); err != nil {
 			fmt.Fprintf(os.Stderr, "bot error: %v\n", err)
 			os.Exit(1)
 		}
@@ -380,7 +390,7 @@ func main() {
 		videos = append(videos, VideoURL{URL: dataURL})
 	}
 
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, thinkingDisabled, images, videos)
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
@@ -399,7 +409,7 @@ func main() {
 func runQuery(cfg modelConfig, modelID string, query string,
 	showThinking, verboseTools bool, contentOut io.Writer,
 	logf func(string, ...any), prompts *Prompts,
-	mcpMgr *MCPManager, mcpNames []string, disableThinking bool,
+	mcpMgr *MCPManager, mcpNames []string, think thinkMode,
 	images []ImageURL, videos []VideoURL) (string, error) {
 
 	// Merge built-in + MCP tool definitions
@@ -416,7 +426,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 
 	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, disableThinking)
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, think)
 		if err != nil {
 			return "", err
 		}
@@ -466,7 +476,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 }
 
-func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string, disableThinking bool) (string, error) {
+func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string, think thinkMode) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -540,7 +550,7 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 	}
 
 	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, disableThinking)
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, think)
 		if err != nil {
 			return "", fmt.Errorf("final synthesis: %w", err)
 		}

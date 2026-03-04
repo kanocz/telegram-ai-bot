@@ -3,3 +3,5 @@ homeassistant.json
 mcp.json
 news.urls
 telegram.json
+config.json
+news.json

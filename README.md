@@ -102,7 +102,9 @@ The `bot` section is optional (only required for `-telegram-bot`).
 ### Flags
 
 - `-no-think` — hide model thinking output (shown dimmed by default)
+- `-enable-thinking` — explicitly enable model thinking/reasoning (sends `enable_thinking: true` to the API)
 - `-disable-thinking` — disable model thinking/reasoning entirely (sends `enable_thinking: false` to the API); also forces `-no-think`
+- `-request-debug` — dump API request JSON to stderr (base64 data truncated)
 - `-show-subagents` — show sub-agent activity: input, thinking, and output (indented with ` | `)
 - `-verbose-tools` — show tool call arguments and results (results truncated to 500 chars)
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
@@ -276,6 +278,7 @@ Start the webhook bot:
 Bot commands:
 - `/news` — news digest
 - `/mail [hours]` — mail digest (default 24 hours)
+- `/think <query>` — enable model thinking for this query
 - `/nothink <query>` — disable model thinking for this query
 - `/mcp server1,server2 <query>` — query with MCP tools activated
 - `/mcp server /news` — news digest with MCP tools
@@ -285,7 +288,7 @@ Bot commands:
 - photo with caption — vision query (caption is the prompt; no caption = "Describe this image")
 - video with caption — vision query (caption is the prompt; no caption = "Describe this video")
 
-Prefixes can be combined: `/nothink /skills code-review /mcp github what's new?`
+Prefixes can be combined: `/think /skills code-review /mcp github what's new?`
 
 ### MCP tools
 
@@ -343,20 +346,26 @@ Use `-skills-dir path` to override and search only in a specific directory.
 ./ai-webfetch "/nothink /skills haiku hello"
 ```
 
-### Disabling thinking
+### Thinking mode
 
-Some models (e.g. Qwen3) support a thinking/reasoning mode. You can disable it:
+Some models (e.g. Qwen3, Qwen3.5) support a thinking/reasoning mode. By default the model decides; you can explicitly enable or disable it:
 
 ```bash
-# Via CLI flag (global)
-./ai-webfetch -disable-thinking "query"
-./ai-webfetch -disable-thinking -news-summary
+# Enable thinking via CLI flag (global)
+./ai-webfetch -enable-thinking "solve this math problem"
 
-# Via /nothink prefix (per-query)
+# Enable thinking via /think prefix (per-query)
+./ai-webfetch "/think what is 25*37?"
+
+# Disable thinking via CLI flag (global)
+./ai-webfetch -disable-thinking "query"
+
+# Disable thinking via /nothink prefix (per-query)
 ./ai-webfetch "/nothink what is 2+2?"
 
-# Combined with /mcp
-./ai-webfetch "/nothink /mcp github what's new?"
+# Combined with other prefixes
+./ai-webfetch "/think /mcp github what's new?"
+./ai-webfetch "/nothink /skills code-review review this"
 ```
 
 For `-news-summary`, thinking is automatically disabled for Phase 1 (headline extraction) and Phase 2 (topic clustering) regardless of flags; Phase 3 (deep dive) respects the flag.

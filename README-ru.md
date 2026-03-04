@@ -103,7 +103,9 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ### Флаги
 
 - `-no-think` — скрыть thinking-вывод модели (по умолчанию показывается серым)
+- `-enable-thinking` — явно включить thinking/reasoning модели (отправляет `enable_thinking: true` в API)
 - `-disable-thinking` — полностью отключить thinking/reasoning модели (отправляет `enable_thinking: false` в API); также подразумевает `-no-think`
+- `-request-debug` — дамп JSON API-запроса в stderr (base64-данные обрезаются)
 - `-show-subagents` — показать работу суб-агентов: вход, thinking, ответ (с отступом ` | `)
 - `-verbose-tools` — показать аргументы вызова и результат каждого tool (результат обрезается до 500 символов)
 - `-mail-summary` — автономный дайджест почты: получить непрочитанные, сгруппировать по отправителям, категоризировать (без tool-loop)
@@ -277,6 +279,7 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 Команды бота:
 - `/news` — дайджест новостей
 - `/mail [часы]` — дайджест почты (по умолчанию 24 часа)
+- `/think <запрос>` — включить thinking модели для этого запроса
 - `/nothink <запрос>` — отключить thinking модели для этого запроса
 - `/mcp сервер1,сервер2 <запрос>` — запрос с MCP-инструментами
 - `/mcp сервер /news` — дайджест новостей с MCP-инструментами
@@ -286,7 +289,7 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 - фото с подписью — vision-запрос (подпись = промпт; без подписи = «Опиши это изображение»)
 - видео с подписью — vision-запрос (подпись = промпт; без подписи = «Опиши это видео»)
 
-Префиксы можно комбинировать: `/nothink /skills code-review /mcp github что нового?`
+Префиксы можно комбинировать: `/think /skills code-review /mcp github что нового?`
 
 ### MCP-инструменты
 
@@ -344,20 +347,26 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ./ai-webfetch "/nothink /skills haiku привет"
 ```
 
-### Отключение thinking
+### Режим thinking
 
-Некоторые модели (например Qwen3) поддерживают режим thinking/reasoning. Его можно отключить:
+Некоторые модели (например Qwen3, Qwen3.5) поддерживают режим thinking/reasoning. По умолчанию решает модель; можно явно включить или отключить:
 
 ```bash
-# Через флаг CLI (глобально)
-./ai-webfetch -disable-thinking "запрос"
-./ai-webfetch -disable-thinking -news-summary
+# Включить thinking через флаг CLI (глобально)
+./ai-webfetch -enable-thinking "реши эту задачу"
 
-# Через префикс /nothink (per-query)
+# Включить thinking через префикс /think (per-query)
+./ai-webfetch "/think сколько будет 25*37?"
+
+# Отключить thinking через флаг CLI (глобально)
+./ai-webfetch -disable-thinking "запрос"
+
+# Отключить thinking через префикс /nothink (per-query)
 ./ai-webfetch "/nothink сколько будет 2+2?"
 
-# В комбинации с /mcp
-./ai-webfetch "/nothink /mcp github что нового?"
+# Комбинация с другими префиксами
+./ai-webfetch "/think /mcp github что нового?"
+./ai-webfetch "/nothink /skills code-review проверь код"
 ```
 
 Для `-news-summary` thinking автоматически отключается на фазах 1 (извлечение заголовков) и 2 (кластеризация по темам) вне зависимости от флагов; фаза 3 (deep dive) учитывает флаг.

@@ -2,6 +2,19 @@ package main
 
 import "strings"
 
+// parseThinkPrefix checks for a "/think" prefix in the query.
+// Returns (true, remaining) if found, or (false, original) otherwise.
+func parseThinkPrefix(s string) (bool, string) {
+	s = strings.TrimSpace(s)
+	if s == "/think" {
+		return true, ""
+	}
+	if strings.HasPrefix(s, "/think ") || strings.HasPrefix(s, "/think\n") {
+		return true, strings.TrimSpace(s[len("/think"):])
+	}
+	return false, s
+}
+
 // parseNothinkPrefix checks for a "/nothink" prefix in the query.
 // Returns (true, remaining) if found, or (false, original) otherwise.
 func parseNothinkPrefix(s string) (bool, string) {

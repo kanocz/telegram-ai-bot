@@ -239,7 +239,7 @@ func extractJSON[T any](raw string) (T, error) {
 
 // --- Main pipeline ---
 
-func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), configPath string, prompts *Prompts, mcpMgr *MCPManager, mcpNames []string, disableThinking bool) (string, error) {
+func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), configPath string, prompts *Prompts, mcpMgr *MCPManager, mcpNames []string, think thinkMode) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -331,7 +331,7 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 				{Role: "user", Content: fmt.Sprintf("Источник: %s\nURL: %s\n\nСодержимое страницы:\n%s", s.Name, s.URL, s.Content)},
 			}
 
-			raw, err := doChat(cfg.BaseURL, modelID, messages, cfg.Limit.Output, cfg.Limit.Context, true)
+			raw, err := doChat(cfg.BaseURL, modelID, messages, cfg.Limit.Output, cfg.Limit.Context, thinkDisable)
 			if err != nil {
 				progress(fmt.Sprintf("    ошибка: %v", err))
 				continue
@@ -411,7 +411,7 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 			{Role: "user", Content: clusterInput},
 		}
 
-		clusterRaw, err := doChat(cfg.BaseURL, modelID, clusterMessages, cfg.Limit.Output, cfg.Limit.Context, true)
+		clusterRaw, err := doChat(cfg.BaseURL, modelID, clusterMessages, cfg.Limit.Output, cfg.Limit.Context, thinkDisable)
 		if err != nil {
 			progress(fmt.Sprintf("  ошибка кластеризации: %v", err))
 			continue
@@ -464,7 +464,7 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 				{Role: "user", Content: fmt.Sprintf("Проанализируй тему \"%s\" используя указанные источники.", t.TopicTitle)},
 			}
 
-			analysis, err := doSubAgentWithTools(cfg.BaseURL, modelID, messages, subAgentDefs, cfg.Limit.Output, cfg.Limit.Context, 5, 15000, logf, subAgentExec, disableThinking)
+			analysis, err := doSubAgentWithTools(cfg.BaseURL, modelID, messages, subAgentDefs, cfg.Limit.Output, cfg.Limit.Context, 5, 15000, logf, subAgentExec, think)
 			if err != nil {
 				progress(fmt.Sprintf("    ошибка: %v, используем briefs", err))
 				analysis = buildBriefFromArticles(t.Articles)

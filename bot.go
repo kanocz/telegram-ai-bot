@@ -203,7 +203,7 @@ func downloadTelegramFile(token, fileID string) ([]byte, error) {
 
 func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, disableThinking bool) error {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode) error {
 
 	if tgCfg.Bot == nil {
 		return fmt.Errorf("telegram config: 'bot' section is required for -telegram-bot")
@@ -290,7 +290,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(logText, 100))
 
 		// Process asynchronously
-		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsConfigPath, mcpMgr, disableThinking, msg)
+		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsConfigPath, mcpMgr, globalThink, msg)
 	})
 
 	server := &http.Server{
@@ -328,7 +328,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 
 func handleBotMessage(token string, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalDisableThinking bool, msg *TGMessage) {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode, msg *TGMessage) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -390,9 +390,15 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		}
 	}
 
-	// Parse /nothink prefix (before /mcp)
+	// Parse /think and /nothink prefixes (before /mcp)
+	thinkPrefix, text := parseThinkPrefix(text)
 	noThinkPrefix, text := parseNothinkPrefix(text)
-	disableThinking := globalDisableThinking || noThinkPrefix
+	think := globalThink
+	if thinkPrefix {
+		think = thinkEnable
+	} else if noThinkPrefix {
+		think = thinkDisable
+	}
 
 	// Parse /mcp prefix (works for all commands: /mcp github /news, /mcp github query, etc.)
 	mcpNames, text := parseMCPPrefix(text)
@@ -418,7 +424,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
-		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, prompts, mcpMgr, mcpNames, disableThinking)
+		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, prompts, mcpMgr, mcpNames, think)
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0
@@ -428,18 +434,18 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 				sinceHours = h
 			}
 		}
-		result, err = runMailSummary(cfg, modelID, showThinking, debugOut, logf, prompts, sinceHours, mcpMgr, mcpNames, disableThinking)
+		result, err = runMailSummary(cfg, modelID, showThinking, debugOut, logf, prompts, sinceHours, mcpMgr, mcpNames, think)
 
 	default:
 		query := text
 		if query == "/start" || query == "/help" {
-			query = "Привет! Чем могу помочь? Доступные команды: /news — дайджест новостей, /mail [часы] — дайджест почты, /mcp сервер запрос — с MCP-инструментами, /nothink — отключить reasoning, или отправь любой вопрос."
+			query = "Привет! Чем могу помочь? Доступные команды: /news — дайджест новостей, /mail [часы] — дайджест почты, /mcp сервер запрос — с MCP-инструментами, /think — включить reasoning, /nothink — отключить reasoning, или отправь любой вопрос."
 			_ = sendToChat(token, chatID, query)
 			return
 		}
 		var contentBuf strings.Builder
 		contentOut := io.MultiWriter(&contentBuf, debugOut)
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, prompts, mcpMgr, mcpNames, disableThinking, images, videos)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, prompts, mcpMgr, mcpNames, think, images, videos)
 		// runQuery returns only the last round's content; contentBuf has
 		// accumulated content from ALL rounds (including intermediate tool-calling
 		// rounds). Use it as fallback when the final response is empty.

@@ -14,6 +14,25 @@ import (
 	"ai-webfetch/tools"
 )
 
+// thinkMode controls whether to explicitly enable/disable thinking in the request.
+type thinkMode int
+
+const (
+	thinkDefault thinkMode = iota // don't send chat_template_kwargs
+	thinkEnable                   // send {"enable_thinking": true}
+	thinkDisable                  // send {"enable_thinking": false}
+)
+
+// applyThinkMode sets chat_template_kwargs on the request if needed.
+func applyThinkMode(req *chatRequest, mode thinkMode) {
+	switch mode {
+	case thinkEnable:
+		req.ChatTemplateKwargs = map[string]any{"enable_thinking": true}
+	case thinkDisable:
+		req.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
+	}
+}
+
 // ImageURL holds a data-URI for an inline image.
 type ImageURL struct {
 	URL string `json:"url"`
@@ -105,6 +124,7 @@ type streamDelta struct {
 	Role             string           `json:"role,omitempty"`
 	Content          *string          `json:"content,omitempty"`
 	ReasoningContent *string          `json:"reasoning_content,omitempty"`
+	Reasoning        *string          `json:"reasoning,omitempty"`
 	ToolCalls        []streamToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -153,7 +173,7 @@ const (
 
 // doStream sends a streaming chat completion request and displays the response.
 // If toolDefs is nil, the request is sent without tools (pure generation).
-func doStream(baseURL, model string, messages []Message, toolDefs []tools.Definition, maxTokens int, showThinking bool, contentOut io.Writer, disableThinking bool) (*StreamResult, error) {
+func doStream(baseURL, model string, messages []Message, toolDefs []tools.Definition, maxTokens int, showThinking bool, contentOut io.Writer, think thinkMode) (*StreamResult, error) {
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  messages,
@@ -161,9 +181,7 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 		Stream:    true,
 		MaxTokens: maxTokens,
 	}
-	if disableThinking {
-		reqBody.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
-	}
+	applyThinkMode(&reqBody, think)
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
@@ -223,16 +241,20 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 		}
 
 		for _, ch := range chunk.Choices {
-			// Reasoning content (e.g. Qwen3 thinking via vLLM)
-			if ch.Delta.ReasoningContent != nil && *ch.Delta.ReasoningContent != "" {
+			// Reasoning content: "reasoning_content" (Qwen3 via older vLLM) or "reasoning" (vLLM 0.16+)
+			rc := ch.Delta.ReasoningContent
+			if rc == nil || *rc == "" {
+				rc = ch.Delta.Reasoning
+			}
+			if rc != nil && *rc != "" {
 				hadReasoning = true
-				reasoningBuf.WriteString(*ch.Delta.ReasoningContent)
+				reasoningBuf.WriteString(*rc)
 				if showThinking {
 					if !reasoningDim {
 						fmt.Fprint(os.Stderr, colorDim)
 						reasoningDim = true
 					}
-					fmt.Fprint(os.Stderr, *ch.Delta.ReasoningContent)
+					fmt.Fprint(os.Stderr, *rc)
 				}
 			}
 
@@ -442,11 +464,11 @@ func defaultToolExec(name string, args json.RawMessage) (string, error) {
 
 func doSubAgentWithTools(baseURL, model string, messages []Message,
 	toolDefs []tools.Definition, maxTokens, contextLimit, maxRounds, maxToolResultChars int,
-	logf func(string, ...any), execTool toolExecFunc, disableThinking bool) (string, error) {
+	logf func(string, ...any), execTool toolExecFunc, think thinkMode) (string, error) {
 
 	for round := 0; round < maxRounds; round++ {
 		effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
-		result, err := doStream(baseURL, model, messages, toolDefs, effectiveMax, false, io.Discard, disableThinking)
+		result, err := doStream(baseURL, model, messages, toolDefs, effectiveMax, false, io.Discard, think)
 		if err != nil {
 			return "", fmt.Errorf("round %d: %w", round, err)
 		}
@@ -494,7 +516,7 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 	// Max rounds exceeded — force text response by calling without tools
 	logf("%s  [sub-agent: max rounds reached, forcing text]%s\n", colorDim, colorReset)
 	effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
-	result, err := doStream(baseURL, model, messages, nil, effectiveMax, false, io.Discard, disableThinking)
+	result, err := doStream(baseURL, model, messages, nil, effectiveMax, false, io.Discard, think)
 	if err != nil {
 		return "", fmt.Errorf("final round: %w", err)
 	}
@@ -503,7 +525,7 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 
 // doChat makes a non-streaming chat completion call (used by sub-agents).
 // contextLimit is the model's total context window (0 = no capping).
-func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit int, disableThinking bool) (string, error) {
+func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit int, think thinkMode) (string, error) {
 	effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
 	reqBody := chatRequest{
 		Model:     model,
@@ -511,9 +533,7 @@ func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit i
 		Stream:    false,
 		MaxTokens: effectiveMax,
 	}
-	if disableThinking {
-		reqBody.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
-	}
+	applyThinkMode(&reqBody, think)
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
@@ -653,16 +673,14 @@ func (pw *prefixWriter) WriteString(s string) {
 // doSubAgentStream runs a streaming chat completion for a sub-agent,
 // displaying all output (thinking + content) on stderr via prefixWriter.
 // Returns the clean content (thinking stripped).
-func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, pw *prefixWriter, disableThinking bool) (string, error) {
+func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, pw *prefixWriter, think thinkMode) (string, error) {
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  messages,
 		Stream:    true,
 		MaxTokens: maxTokens,
 	}
-	if disableThinking {
-		reqBody.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
-	}
+	applyThinkMode(&reqBody, think)
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
@@ -716,13 +734,17 @@ func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, 
 		}
 
 		for _, ch := range chunk.Choices {
-			if ch.Delta.ReasoningContent != nil && *ch.Delta.ReasoningContent != "" {
+			rc := ch.Delta.ReasoningContent
+			if rc == nil || *rc == "" {
+				rc = ch.Delta.Reasoning
+			}
+			if rc != nil && *rc != "" {
 				hadReasoning = true
 				if !reasoningDim {
 					pw.WriteString(colorDim)
 					reasoningDim = true
 				}
-				pw.WriteString(*ch.Delta.ReasoningContent)
+				pw.WriteString(*rc)
 			}
 
 			if ch.Delta.Content != nil && *ch.Delta.Content != "" {
