@@ -170,6 +170,7 @@ const (
 	colorDim   = "\033[2m"
 	colorReset = "\033[0m"
 	colorCyan  = "\033[36m"
+	colorBold  = "\033[1m"
 )
 
 // doStream sends a streaming chat completion request and displays the response.

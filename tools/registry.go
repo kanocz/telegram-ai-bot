@@ -95,6 +95,7 @@ func All() []Definition {
 	hideCalWrite := hideCal || !CalendarWritable()
 	hideContacts := !ContactsAvailable()
 	hideContactsWrite := hideContacts || !ContactsWritable()
+	hideAsk := !AskAvailable()
 
 	defs := make([]Definition, 0, len(registry))
 	for _, t := range registry {
@@ -116,6 +117,9 @@ func All() []Definition {
 			continue
 		}
 		if hideContactsWrite && isContactsWriteTool(name) {
+			continue
+		}
+		if hideAsk && name == "ask_user" {
 			continue
 		}
 		defs = append(defs, t.Def)

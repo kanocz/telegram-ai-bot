@@ -151,6 +151,59 @@ func sendToChats(token string, chatIDs []int64, text string) error {
 	return nil
 }
 
+// sendMessageWithKeyboard sends a message with an inline keyboard and returns the message_id.
+func sendMessageWithKeyboard(token string, chatID int64, text string, keyboard any) (int64, error) {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+
+	replyMarkup, err := json.Marshal(keyboard)
+	if err != nil {
+		return 0, fmt.Errorf("marshal keyboard: %w", err)
+	}
+
+	vals := url.Values{
+		"chat_id":      {strconv.FormatInt(chatID, 10)},
+		"text":         {text},
+		"reply_markup": {string(replyMarkup)},
+	}
+
+	resp, err := http.PostForm(apiURL, vals)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("decode error: %w", err)
+	}
+	if !result.OK {
+		return 0, fmt.Errorf("API error: %s", result.Description)
+	}
+	return result.Result.MessageID, nil
+}
+
+// answerCallbackQuery acknowledges a callback query to remove the loading indicator.
+func answerCallbackQuery(token, callbackQueryID string) error {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/answerCallbackQuery", token)
+	vals := url.Values{
+		"callback_query_id": {callbackQueryID},
+	}
+	resp, err := http.PostForm(apiURL, vals)
+	if err != nil {
+		return fmt.Errorf("answerCallbackQuery: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // sendTypingAction sends a "typing" indicator to a chat.
 func sendTypingAction(token string, chatID int64) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendChatAction", token)

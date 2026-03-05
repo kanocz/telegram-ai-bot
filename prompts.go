@@ -191,6 +191,10 @@ const defaultNewsTopicDeepDive = `Ты — аналитик новостей. Т
 
 Язык ответа: {language}.`
 
+// AskUserPromptHint is appended to the system prompt when the ask_user tool is available.
+const AskUserPromptHint = `
+- You have the ask_user tool. When the user's request is ambiguous, has multiple valid interpretations, or you need to choose between several approaches — use ask_user to ask for clarification with specific options instead of guessing. Also use it for confirmations before irreversible or important actions. Do not overuse it: if the request is clear, just do it.`
+
 const defaultImapSummarize = `Summarize the following email concisely in 2-3 sentences. Focus on the main topic, key information, and any action items. Response language: {language}.`
 
 const defaultImapDigest = `Analyze the email and its conversation history. Provide a structured response:

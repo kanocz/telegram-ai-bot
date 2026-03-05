@@ -97,9 +97,146 @@ func (m *TGMessage) videoFileID() (fileID, mime string) {
 	return "", ""
 }
 
+type TGInlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
+}
+
+type TGInlineKeyboardMarkup struct {
+	InlineKeyboard [][]TGInlineKeyboardButton `json:"inline_keyboard"`
+}
+
+type TGCallbackQuery struct {
+	ID      string     `json:"id"`
+	From    *TGUser    `json:"from"`
+	Message *TGMessage `json:"message,omitempty"`
+	Data    string     `json:"data"`
+}
+
 type Update struct {
-	UpdateID int64      `json:"update_id"`
-	Message  *TGMessage `json:"message,omitempty"`
+	UpdateID      int64            `json:"update_id"`
+	Message       *TGMessage       `json:"message,omitempty"`
+	CallbackQuery *TGCallbackQuery `json:"callback_query,omitempty"`
+}
+
+// Pending questions: keyboard-based (keyed by message_id) and free-text (keyed by chatID).
+
+type pendingQuestion struct {
+	ChatID   int64
+	Options  []tools.UserOption
+	ResultCh chan string
+}
+
+var (
+	pendingKeyboardQuestions   sync.Map // message_id (int64) -> *pendingQuestion
+	pendingTextQuestions       sync.Map // chatID (int64) -> *pendingQuestion
+)
+
+func registerKeyboardQuestion(msgID int64, pq *pendingQuestion) {
+	pendingKeyboardQuestions.Store(msgID, pq)
+}
+
+func resolveKeyboardQuestion(msgID int64) *pendingQuestion {
+	v, ok := pendingKeyboardQuestions.LoadAndDelete(msgID)
+	if !ok {
+		return nil
+	}
+	return v.(*pendingQuestion)
+}
+
+func registerTextQuestion(chatID int64, pq *pendingQuestion) {
+	pendingTextQuestions.Store(chatID, pq)
+}
+
+func resolveTextQuestion(chatID int64) *pendingQuestion {
+	v, ok := pendingTextQuestions.LoadAndDelete(chatID)
+	if !ok {
+		return nil
+	}
+	return v.(*pendingQuestion)
+}
+
+// TelegramPrompter implements tools.UserPrompter for Telegram bot sessions.
+type TelegramPrompter struct {
+	Token  string
+	ChatID int64
+}
+
+func (p *TelegramPrompter) Ask(q tools.UserQuestion) (string, error) {
+	if len(q.Options) > 0 {
+		// Build inline keyboard: one button per row
+		var rows [][]TGInlineKeyboardButton
+		for i, opt := range q.Options {
+			btn := TGInlineKeyboardButton{
+				Text:         opt.Label,
+				CallbackData: strconv.Itoa(i),
+			}
+			rows = append(rows, []TGInlineKeyboardButton{btn})
+		}
+		keyboard := TGInlineKeyboardMarkup{InlineKeyboard: rows}
+
+		// Build question text with descriptions
+		text := q.Question
+		for _, opt := range q.Options {
+			if opt.Description != "" {
+				text += fmt.Sprintf("\n• %s — %s", opt.Label, opt.Description)
+			}
+		}
+
+		msgID, err := sendMessageWithKeyboard(p.Token, p.ChatID, text, keyboard)
+		if err != nil {
+			return "", fmt.Errorf("send keyboard: %w", err)
+		}
+
+		pq := &pendingQuestion{
+			ChatID:   p.ChatID,
+			Options:  q.Options,
+			ResultCh: make(chan string, 1),
+		}
+		registerKeyboardQuestion(msgID, pq)
+
+		// Block until user presses a button (no timeout — user may answer hours later)
+		answer := <-pq.ResultCh
+		return answer, nil
+	}
+
+	// No options: send as regular message and wait for text reply
+	_, err := sendTelegramChunk(p.Token, p.ChatID, q.Question, "", 0)
+	if err != nil {
+		return "", fmt.Errorf("send question: %w", err)
+	}
+
+	pq := &pendingQuestion{
+		ChatID:   p.ChatID,
+		ResultCh: make(chan string, 1),
+	}
+	registerTextQuestion(p.ChatID, pq)
+
+	answer := <-pq.ResultCh
+	return answer, nil
+}
+
+func handleCallbackQuery(token string, cq *TGCallbackQuery) {
+	// Acknowledge the callback to remove the loading spinner
+	_ = answerCallbackQuery(token, cq.ID)
+
+	if cq.Message == nil {
+		return
+	}
+
+	pq := resolveKeyboardQuestion(cq.Message.MessageID)
+	if pq == nil {
+		// Stale button press — ignore silently
+		return
+	}
+
+	// Parse callback data as option index
+	idx, err := strconv.Atoi(cq.Data)
+	if err != nil || idx < 0 || idx >= len(pq.Options) {
+		pq.ResultCh <- cq.Data // fallback: raw data
+		return
+	}
+	pq.ResultCh <- pq.Options[idx].Label
 }
 
 // Webhook management
@@ -260,6 +397,12 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		// Always respond 200 quickly to avoid Telegram retries
 		w.WriteHeader(http.StatusOK)
 
+		// Handle callback queries (inline keyboard button presses)
+		if update.CallbackQuery != nil {
+			handleCallbackQuery(tgCfg.Token, update.CallbackQuery)
+			return
+		}
+
 		msg := update.Message
 		if msg == nil || (msg.Text == "" && len(msg.Photo) == 0 && !msg.hasVideo()) {
 			if requestDebug && msg != nil {
@@ -297,6 +440,12 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 			logText = "[video] " + msg.Caption
 		}
 		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(logText, 100))
+
+		// Check if there's a pending text question for this chat — route answer there
+		if pq := resolveTextQuestion(msg.Chat.ID); pq != nil && msg.Text != "" {
+			pq.ResultCh <- strings.TrimSpace(msg.Text)
+			return
+		}
 
 		// Process asynchronously
 		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, promptsTemplate, defaultLang, verboseTools, newsConfigPath, mcpMgr, globalThink, msg, user)
@@ -365,6 +514,10 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		}
 	}
 
+	// Enable ask_user tool for Telegram sessions
+	tools.SetPrompter(&TelegramPrompter{Token: token, ChatID: msg.Chat.ID})
+	defer tools.ClearPrompter()
+
 	// Apply per-user language to prompts
 	lang := defaultLang
 	if user != nil && user.Language != "" {
@@ -372,6 +525,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	}
 	prompts := *promptsTemplate // copy template
 	applyLanguage(&prompts, lang)
+	prompts.SystemPrompt += AskUserPromptHint
 
 	// Compute MCP overrides from user config
 	var mcpOverrides map[string]bool

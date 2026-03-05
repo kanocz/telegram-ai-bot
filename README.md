@@ -152,6 +152,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-filesystem-rw` — also enable write tools (`file_write`, `file_patch`); requires `-filesystem`
 - `-git` — enable git history tools (`git_log`, `git_show`, `git_diff`); repo = `-filesystem` dir or cwd
 - `-git-dir path` — enable git history tools on a specific repo (implies `-git`)
+- `-no-ask` — disable the `ask_user` tool (for cron/scripting; the tool is also hidden in `-quiet`, `-telegram`, `-mail-summary`, and `-news-summary` modes)
 - `-export-default-prompts dir` — export default prompts to a directory and exit
 - `-prompts-dir dir` — load prompts from directory (missing files fall back to built-in defaults)
 
@@ -191,6 +192,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 | `git_log` | Git commit history (requires `-git`) |
 | `git_show` | Show commit details (requires `-git`) |
 | `git_diff` | Diff between commits/refs (requires `-git`) |
+| `ask_user` | Ask user a question with optional choices (interactive CLI and Telegram bot) |
 
 ## Prompt customization
 
@@ -496,6 +498,20 @@ Search and manage contacts (requires `contacts` in `users.json`):
 ./ai-webfetch -user alice "Find John's phone number"
 ./ai-webfetch -user alice "What's the email for ACME Corp?"
 ```
+
+### Interactive questions (ask_user)
+
+When the AI needs clarification, it can ask questions with options. In CLI mode, numbered choices are printed to the terminal; in Telegram, an inline keyboard with buttons is sent.
+
+```bash
+# Interactive mode (default) — AI can ask questions
+./ai-webfetch "Set up a cron job for backups"
+
+# Disable for scripting/cron
+./ai-webfetch -no-ask "Set up a cron job for backups"
+```
+
+The tool is automatically hidden in `-quiet`, `-telegram` (one-shot send), `-mail-summary`, and `-news-summary` modes. In Telegram bot mode, it is always available — questions appear as inline keyboard buttons, and the bot waits for the user to press one (no timeout).
 
 ### Debugging sub-agents
 

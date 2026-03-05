@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,6 +97,7 @@ func main() {
 	userFlag := flag.String("user", "", "user name from users.json (auto-selects if only one user)")
 	skillsFlag := flag.String("skills", "", "activate skills by name (comma-separated)")
 	skillsDirFlag := flag.String("skills-dir", "", "override skills directory (default: ~/.claude/skills)")
+	noAsk := flag.Bool("no-ask", false, "disable interactive ask_user tool (for cron/scripting)")
 	flag.Parse()
 
 	requestDebug = *requestDebugFlag
@@ -450,6 +453,13 @@ func main() {
 		videos = append(videos, VideoURL{URL: dataURL})
 	}
 
+	// Enable ask_user in interactive CLI mode (not telegram, quiet, mail, news, or -no-ask)
+	if !*noAsk && !*telegram && !*quiet {
+		tools.SetPrompter(&CLIPrompter{})
+		defer tools.ClearPrompter()
+		prompts.SystemPrompt += AskUserPromptHint
+	}
+
 	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil, mcpOverrides)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
@@ -703,6 +713,76 @@ func loadFileDataURL(path string) (string, error) {
 	}
 	b64 := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, b64), nil
+}
+
+// CLIPrompter implements tools.UserPrompter for interactive CLI sessions.
+// It prints the question and numbered options to stderr, reads from stdin.
+type CLIPrompter struct{}
+
+func (p *CLIPrompter) Ask(q tools.UserQuestion) (string, error) {
+	fmt.Fprintf(os.Stderr, "\n%s%s%s\n", colorBold, q.Question, colorReset)
+
+	if len(q.Options) > 0 {
+		for i, opt := range q.Options {
+			if opt.Description != "" {
+				fmt.Fprintf(os.Stderr, "  %s%d)%s %s — %s\n", colorCyan, i+1, colorReset, opt.Label, opt.Description)
+			} else {
+				fmt.Fprintf(os.Stderr, "  %s%d)%s %s\n", colorCyan, i+1, colorReset, opt.Label)
+			}
+		}
+		if q.MultiSelect {
+			fmt.Fprintf(os.Stderr, "%sВведите номера через запятую или свой ответ: %s", colorDim, colorReset)
+		} else {
+			fmt.Fprintf(os.Stderr, "%sВведите номер или свой ответ: %s", colorDim, colorReset)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "%sВведите ответ: %s", colorDim, colorReset)
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("read stdin: %w", err)
+		}
+		return "", fmt.Errorf("no input (EOF)")
+	}
+	input := strings.TrimSpace(scanner.Text())
+	if input == "" {
+		return "", fmt.Errorf("empty input")
+	}
+
+	if len(q.Options) == 0 {
+		return input, nil
+	}
+
+	if q.MultiSelect {
+		// Parse comma-separated numbers
+		parts := strings.Split(input, ",")
+		var labels []string
+		allNumeric := true
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 1 || n > len(q.Options) {
+				allNumeric = false
+				break
+			}
+			labels = append(labels, q.Options[n-1].Label)
+		}
+		if allNumeric && len(labels) > 0 {
+			data, _ := json.Marshal(labels)
+			return string(data), nil
+		}
+		// Not numeric — return raw input
+		return input, nil
+	}
+
+	// Single select: try to parse as number
+	if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= len(q.Options) {
+		return q.Options[n-1].Label, nil
+	}
+	// Not a number — return as custom answer
+	return input, nil
 }
 
 // dedup merges two name lists, removing duplicates.
