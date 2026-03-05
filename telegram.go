@@ -14,22 +14,15 @@ import (
 
 const telegramMaxLen = 4096
 
-type chatRouting struct {
-	News  []int64 `json:"news"`
-	Mail  []int64 `json:"mail"`
-	Other []int64 `json:"other"`
-}
-
 type botConfig struct {
-	WebhookURL   string  `json:"webhook_url"`
-	Listen       string  `json:"listen"`
-	AllowedUsers []int64 `json:"allowed_users"`
+	WebhookURL         string `json:"webhook_url"`
+	Listen             string `json:"listen"`
+	AllowUnregistered  bool   `json:"allow_unregistered_users"`
 }
 
 type telegramConfig struct {
-	Token string      `json:"token"`
-	Chats chatRouting `json:"chat_id"`
-	Bot   *botConfig  `json:"bot,omitempty"`
+	Token string     `json:"token"`
+	Bot   *botConfig `json:"bot,omitempty"`
 }
 
 func loadTelegramConfig(path string) (*telegramConfig, error) {
@@ -44,12 +37,6 @@ func loadTelegramConfig(path string) (*telegramConfig, error) {
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("telegram config: token is empty")
 	}
-
-	// Validate: chat_id required unless bot-only config
-	if cfg.Bot == nil && len(cfg.Chats.News) == 0 && len(cfg.Chats.Mail) == 0 && len(cfg.Chats.Other) == 0 {
-		return nil, fmt.Errorf("telegram config: chat_id is empty")
-	}
-
 	return &cfg, nil
 }
 

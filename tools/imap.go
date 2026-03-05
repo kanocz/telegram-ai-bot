@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"os"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	netmail "net/mail"
@@ -21,28 +23,48 @@ import (
 	_ "github.com/emersion/go-message/charset"
 )
 
-type imapConfig struct {
+// ImapUserConfig holds IMAP credentials for a single user.
+type ImapUserConfig struct {
 	Server   string `json:"server"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-var imapCfg *imapConfig
+var imapOverrides sync.Map // goroutineID → *ImapUserConfig
 
-func getImapConfig() (*imapConfig, error) {
-	if imapCfg != nil {
-		return imapCfg, nil
+// goroutineID extracts the current goroutine ID from runtime.Stack().
+func goroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	// Stack starts with "goroutine <id> [..."
+	s := string(buf[:n])
+	s = s[len("goroutine "):]
+	s = s[:strings.IndexByte(s, ' ')]
+	id, _ := strconv.ParseInt(s, 10, 64)
+	return id
+}
+
+// SetImapOverride sets the IMAP config for the current goroutine.
+func SetImapOverride(cfg *ImapUserConfig) {
+	imapOverrides.Store(goroutineID(), cfg)
+}
+
+// ClearImapOverride removes the IMAP config for the current goroutine.
+func ClearImapOverride() {
+	imapOverrides.Delete(goroutineID())
+}
+
+// ImapAvailable returns true if the current goroutine has an IMAP override set.
+func ImapAvailable() bool {
+	_, ok := imapOverrides.Load(goroutineID())
+	return ok
+}
+
+func getImapConfig() (*ImapUserConfig, error) {
+	if v, ok := imapOverrides.Load(goroutineID()); ok {
+		return v.(*ImapUserConfig), nil
 	}
-	data, err := os.ReadFile("imap.json")
-	if err != nil {
-		return nil, fmt.Errorf("cannot read imap.json: %w", err)
-	}
-	var cfg imapConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("invalid imap.json: %w", err)
-	}
-	imapCfg = &cfg
-	return imapCfg, nil
+	return nil, fmt.Errorf("no IMAP config for this context (use -user or configure telegram_id in users.json)")
 }
 
 func dialIMAP() (*imapclient.Client, error) {

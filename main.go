@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ai-webfetch/tools"
 )
@@ -91,6 +92,7 @@ func main() {
 	filesystemRW := flag.Bool("filesystem-rw", false, "enable write filesystem tools (requires -filesystem)")
 	gitFlag := flag.Bool("git", false, "enable git history tools (repo = -filesystem dir, or cwd)")
 	gitDir := flag.String("git-dir", "", "enable git history tools on this repo (implies -git)")
+	userFlag := flag.String("user", "", "user name from users.json (auto-selects if only one user)")
 	skillsFlag := flag.String("skills", "", "activate skills by name (comma-separated)")
 	skillsDirFlag := flag.String("skills-dir", "", "override skills directory (default: ~/.claude/skills)")
 	flag.Parse()
@@ -150,11 +152,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "telegram config error: %v\n", err)
 			os.Exit(1)
 		}
-		// Override chat routing if -telegram-chatid specified
-		if *telegramChatID != 0 {
-			ids := []int64{*telegramChatID}
-			tgCfg.Chats = chatRouting{News: ids, Mail: ids, Other: ids}
-		}
 	}
 
 	// Content output: stdout normally, discard for telegram/quiet
@@ -178,7 +175,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Resolve language: CLI flag > config > default
+	// Resolve base language: CLI flag > config > default
+	// (user language is applied later, after user resolution)
 	language := "русский"
 	if configLanguage != "" {
 		language = configLanguage
@@ -187,7 +185,7 @@ func main() {
 		language = *languageFlag
 	}
 
-	// Load and apply prompts
+	// Load prompts (language applied after user resolution below)
 	var prompts Prompts
 	if *promptsDir != "" {
 		prompts, err = loadPrompts(*promptsDir)
@@ -198,8 +196,6 @@ func main() {
 	} else {
 		prompts = defaultPrompts()
 	}
-	applyLanguage(&prompts, language)
-	installToolPrompts(&prompts)
 
 	// Parse /think and /nothink prefixes from query (before /mcp)
 	thinkPrefix, query := parseThinkPrefix(query)
@@ -312,6 +308,62 @@ func main() {
 		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, think)
 	}
 
+	// Resolve user from users.json
+	var user *UserConfig
+	users := getUsers()
+	if *userFlag != "" {
+		var err error
+		user, err = resolveUserByName(users, *userFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "user error: %v\n", err)
+			os.Exit(1)
+		}
+	} else if len(users) == 1 {
+		for _, u := range users {
+			user = u
+		}
+	}
+
+	// Apply per-user overrides for CLI
+	if user != nil {
+		if imapCfg := userImapConfig(user); imapCfg != nil {
+			tools.SetImapOverride(imapCfg)
+		}
+		haEnabled := user.HA != nil && user.HA.Enabled
+		tools.SetHAEnabled(haEnabled)
+		// User language (overridden by CLI flag)
+		if user.Language != "" && *languageFlag == "" {
+			language = user.Language
+		}
+	}
+
+	// Save prompt template before language application (for bot per-user language)
+	promptsTemplate := prompts
+
+	// Now apply language to prompts (after user resolution)
+	applyLanguage(&prompts, language)
+	installToolPrompts(&prompts)
+
+	// Inject current time into system prompt so the model knows "now"
+	now := time.Now()
+	zone, _ := now.Zone()
+	timeStr := fmt.Sprintf("\n\nCurrent time: %s (%s).",
+		now.Format("2006-01-02 15:04"), zone)
+	prompts.SystemPrompt += timeStr
+	promptsTemplate.SystemPrompt += timeStr
+
+	// Compute MCP overrides from user config
+	var mcpOverrides map[string]bool
+	if user != nil && len(user.MCP) > 0 {
+		mcpOverrides = user.MCP
+	}
+
+	// Validate: -telegram without -telegram-chatid needs a user for chat routing
+	if *telegram && *telegramChatID == 0 && user == nil {
+		fmt.Fprintf(os.Stderr, "error: -telegram requires -user or -telegram-chatid\n")
+		os.Exit(1)
+	}
+
 	// Parse /mcp prefix from query and merge with flag names
 	prefixNames, query := parseMCPPrefix(query)
 	mcpNames := dedup(flagMCPNames, prefixNames)
@@ -327,14 +379,15 @@ func main() {
 	}
 
 	if *mailSummary {
-		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames, think)
+		content, err := runMailSummary(cfg, modelID, showThinking, contentOut, logf, &prompts, 24, mcpMgr, mcpNames, think, mcpOverrides)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mail summary error: %v\n", err)
 			os.Exit(1)
 		}
 		if *telegram {
+			chatID := userChatID(user, "mail", *telegramChatID)
 			logf("%sОтправка в Telegram...%s\n", colorDim, colorReset)
-			if err := sendToChats(tgCfg.Token, tgCfg.Chats.Mail, stripThinkTags(content)); err != nil {
+			if err := sendToChat(tgCfg.Token, chatID, stripThinkTags(content)); err != nil {
 				fmt.Fprintf(os.Stderr, "telegram error: %v\n", err)
 				os.Exit(1)
 			}
@@ -344,14 +397,15 @@ func main() {
 	}
 
 	if *newsSummary {
-		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think)
+		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
 			os.Exit(1)
 		}
 		if *telegram {
+			chatID := userChatID(user, "news", *telegramChatID)
 			logf("%sОтправка в Telegram...%s\n", colorDim, colorReset)
-			if err := sendToChats(tgCfg.Token, tgCfg.Chats.News, stripThinkTags(content)); err != nil {
+			if err := sendToChat(tgCfg.Token, chatID, stripThinkTags(content)); err != nil {
 				fmt.Fprintf(os.Stderr, "telegram error: %v\n", err)
 				os.Exit(1)
 			}
@@ -361,7 +415,7 @@ func main() {
 	}
 
 	if *telegramBot {
-		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &prompts, *verboseTools, *newsConfig, mcpMgr, think); err != nil {
+		if err := runBot(tgCfg, cfg, modelID, showThinking, logf, &promptsTemplate, language, *verboseTools, *newsConfig, mcpMgr, think); err != nil {
 			fmt.Fprintf(os.Stderr, "bot error: %v\n", err)
 			os.Exit(1)
 		}
@@ -390,15 +444,16 @@ func main() {
 		videos = append(videos, VideoURL{URL: dataURL})
 	}
 
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil)
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil, mcpOverrides)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
 	}
 
 	if *telegram {
+		chatID := userChatID(user, "other", *telegramChatID)
 		logf("%sОтправка в Telegram...%s\n", colorDim, colorReset)
-		if err := sendToChats(tgCfg.Token, tgCfg.Chats.Other, stripThinkTags(finalContent)); err != nil {
+		if err := sendToChat(tgCfg.Token, chatID, stripThinkTags(finalContent)); err != nil {
 			fmt.Fprintf(os.Stderr, "telegram error: %v\n", err)
 			os.Exit(1)
 		}
@@ -410,12 +465,13 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	showThinking, verboseTools bool, contentOut io.Writer,
 	logf func(string, ...any), prompts *Prompts,
 	mcpMgr *MCPManager, mcpNames []string, think thinkMode,
-	images []ImageURL, videos []VideoURL, history []Message) (string, error) {
+	images []ImageURL, videos []VideoURL, history []Message,
+	mcpOverrides map[string]bool) (string, error) {
 
 	// Merge built-in + MCP tool definitions
 	toolDefs := tools.All()
 	if mcpMgr != nil {
-		toolDefs = append(toolDefs, mcpMgr.ActiveToolDefs(mcpNames)...)
+		toolDefs = append(toolDefs, mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)...)
 	}
 	execTool := makeToolExec(mcpMgr, mcpNames)
 
@@ -477,7 +533,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 }
 
-func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string, think thinkMode) (string, error) {
+func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string, think thinkMode, mcpOverrides map[string]bool) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -545,8 +601,8 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 	// Merge MCP tools for final synthesis (custom prompts may reference them)
 	var toolDefs []tools.Definition
 	var execTool toolExecFunc
-	if mcpMgr != nil && len(mcpNames) > 0 {
-		toolDefs = mcpMgr.ActiveToolDefs(mcpNames)
+	if mcpMgr != nil && (len(mcpNames) > 0 || len(mcpOverrides) > 0) {
+		toolDefs = mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)
 		execTool = makeToolExec(mcpMgr, mcpNames)
 	}
 

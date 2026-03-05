@@ -25,15 +25,42 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ```
 
 
-### imap.json — доступ к почте
+### users.json — настройки пользователей
 
 ```json
 {
-  "server": "imap.example.com:993",
-  "username": "user@example.com",
-  "password": "your-password"
+  "alice": {
+    "telegram_id": 123456789,
+    "language": "čeština",
+    "chats": {
+      "news": 2342344,
+      "mail": 3453454,
+      "other": 3453454
+    },
+    "imap": {
+      "server": "imap.example.com:993",
+      "username": "alice@example.com",
+      "password": "alice-password"
+    },
+    "homeassistant": {
+      "enabled": true
+    },
+    "mcp": {
+      "context7": true,
+      "github": false
+    }
+  }
 }
 ```
+
+- Ключ = имя пользователя (используется флагом CLI `-user alice`)
+- `telegram_id` = Telegram user ID (бот автоматически определяет пользователя)
+- `language` = язык по умолчанию для автоматических задач (опционально; на интерактивные вопросы модель отвечает на языке вопроса)
+- `chats` = Telegram chat ID для маршрутизации (news/mail/other); используется флагом `-telegram`
+- `imap` = IMAP-данные (опционально; если отсутствует, IMAP-инструменты скрываются)
+- `homeassistant` = доступ к HA (опционально; если отсутствует или `enabled: false`, HA-инструменты скрываются)
+- `mcp` = per-user MCP-серверы (опционально; `true` включает, `false` отключает)
+- CLI: если в конфиге один пользователь, он выбирается автоматически без `-user`
 
 ### homeassistant.json — Home Assistant
 
@@ -75,20 +102,15 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 ```json
 {
   "token": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-  "chat_id": {
-    "news": [-1234585163, 987654321],
-    "mail": [-1234585163],
-    "other": [-1234585163]
-  },
   "bot": {
     "webhook_url": "https://example.com/hook/SECRET",
     "listen": ":8443",
-    "allowed_users": [123456789]
+    "allow_unregistered_users": false
   }
 }
 ```
 
-Секция `bot` опциональна (нужна только для `-telegram-bot`).
+Секция `bot` опциональна (нужна только для `-telegram-bot`). Маршрутизация чатов и доступ пользователей настраиваются в `users.json`.
 
 ## Использование
 
@@ -108,6 +130,7 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 - `-request-debug` — дамп JSON API-запроса в stderr (base64-данные обрезаются)
 - `-show-subagents` — показать работу суб-агентов: вход, thinking, ответ (с отступом ` | `)
 - `-verbose-tools` — показать аргументы вызова и результат каждого tool (результат обрезается до 500 символов)
+- `-user name` — выбрать пользователя из `users.json` по имени (автовыбор при одном пользователе); включает IMAP, HA, MCP по конфигу пользователя
 - `-mail-summary` — автономный дайджест почты: получить непрочитанные, сгруппировать по отправителям, категоризировать (без tool-loop)
 - `-news-summary` — кросс-референсный дайджест новостей: загрузить URL из файла, суб-агенты анализируют каждый источник (с доступом к `web_fetch`), финальная сводка с группировкой по событиям и фокусом на Европу
 - `-news-config path` — путь к конфигу новостей (по умолчанию `news.json`)
@@ -219,6 +242,7 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 
 ```bash
 ./ai-webfetch -mail-summary
+./ai-webfetch -mail-summary -user alice
 ./ai-webfetch -mail-summary -show-subagents
 ```
 
@@ -254,12 +278,12 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 
 ### Multi-chat routing
 
-С новым форматом конфига результат отправляется в разные чаты по категориям:
+Результат отправляется в чат пользователя по категории (из `users.json`):
 
 ```bash
-./ai-webfetch -news-summary -telegram              # → chats.news[]
-./ai-webfetch -mail-summary -telegram              # → chats.mail[]
-./ai-webfetch -telegram "запрос"                   # → chats.other[]
+./ai-webfetch -user alice -news-summary -telegram   # → alice's chats.news
+./ai-webfetch -user alice -mail-summary -telegram   # → alice's chats.mail
+./ai-webfetch -user alice -telegram "запрос"         # → alice's chats.other
 ```
 
 Переопределение chat ID для одного запуска:

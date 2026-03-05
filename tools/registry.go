@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 )
 
@@ -65,9 +66,20 @@ func Get(name string) (*Tool, bool) {
 }
 
 // All returns the definitions of all registered tools.
+// IMAP tools (imap_ prefix) are excluded when no IMAP config is set for the current goroutine.
+// HA tools (ha_ prefix) are excluded when HA is not enabled for the current goroutine.
 func All() []Definition {
+	hideImap := !ImapAvailable()
+	hideHA := !HAAvailable()
 	defs := make([]Definition, 0, len(registry))
 	for _, t := range registry {
+		name := t.Def.Function.Name
+		if hideImap && strings.HasPrefix(name, "imap_") {
+			continue
+		}
+		if hideHA && strings.HasPrefix(name, "ha_") {
+			continue
+		}
 		defs = append(defs, t.Def)
 	}
 	return defs

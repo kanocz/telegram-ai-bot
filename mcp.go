@@ -107,7 +107,8 @@ func (m *MCPManager) serverNames() []string {
 }
 
 // ActiveToolDefs returns tool definitions for enabled + extra servers.
-func (m *MCPManager) ActiveToolDefs(extraNames []string) []tools.Definition {
+// overrides applies per-user MCP settings: true adds a server, false removes it.
+func (m *MCPManager) ActiveToolDefs(extraNames []string, overrides map[string]bool) []tools.Definition {
 	active := map[string]bool{}
 	for name, srv := range m.servers {
 		if srv.cfg.Enabled && srv.inited {
@@ -117,11 +118,26 @@ func (m *MCPManager) ActiveToolDefs(extraNames []string) []tools.Definition {
 	for _, name := range extraNames {
 		active[name] = true
 	}
+	for name, enabled := range overrides {
+		if enabled {
+			active[name] = true
+		} else {
+			delete(active, name)
+		}
+	}
+
+	// Initialize any servers that became active via overrides
+	for name := range active {
+		srv := m.servers[name]
+		if srv != nil && !srv.inited {
+			_ = srv.initialize()
+		}
+	}
 
 	var defs []tools.Definition
 	for name := range active {
 		srv := m.servers[name]
-		if !srv.inited {
+		if srv == nil || !srv.inited {
 			continue
 		}
 		for _, t := range srv.tools {

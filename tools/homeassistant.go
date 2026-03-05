@@ -4,13 +4,46 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/net/websocket"
 )
+
+var haOverrides sync.Map // goroutineID → bool
+
+func haGoroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	s := string(buf[:n])
+	s = s[len("goroutine "):]
+	s = s[:strings.IndexByte(s, ' ')]
+	id, _ := strconv.ParseInt(s, 10, 64)
+	return id
+}
+
+// SetHAEnabled sets the HA availability for the current goroutine.
+func SetHAEnabled(enabled bool) {
+	haOverrides.Store(haGoroutineID(), enabled)
+}
+
+// ClearHAEnabled removes the HA override for the current goroutine.
+func ClearHAEnabled() {
+	haOverrides.Delete(haGoroutineID())
+}
+
+// HAAvailable returns true if HA tools should be visible for the current goroutine.
+func HAAvailable() bool {
+	v, ok := haOverrides.Load(haGoroutineID())
+	if !ok {
+		return false
+	}
+	return v.(bool)
+}
 
 // --- Config ---
 

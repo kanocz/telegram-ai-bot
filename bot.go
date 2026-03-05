@@ -16,6 +16,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ai-webfetch/tools"
 )
 
 // Telegram Bot API types
@@ -205,7 +207,7 @@ func downloadTelegramFile(token, fileID string) ([]byte, error) {
 }
 
 func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
-	showThinking bool, logf func(string, ...any), prompts *Prompts,
+	showThinking bool, logf func(string, ...any), promptsTemplate *Prompts, defaultLang string,
 	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode) error {
 
 	if tgCfg.Bot == nil {
@@ -213,11 +215,8 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 	}
 	botCfg := tgCfg.Bot
 
-	// Build allowed user set
-	allowed := make(map[int64]bool, len(botCfg.AllowedUsers))
-	for _, uid := range botCfg.AllowedUsers {
-		allowed[uid] = true
-	}
+	// Load user configs
+	users := getUsers()
 
 	// Set webhook
 	if err := setWebhook(tgCfg.Token, botCfg.WebhookURL); err != nil {
@@ -270,9 +269,16 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 			return
 		}
 
-		// Check allowed users (if list is non-empty)
-		if len(allowed) > 0 && msg.From != nil && !allowed[msg.From.ID] {
-			log.Printf("Rejected message from user %d (%s)", msg.From.ID, msg.From.Username)
+		// Resolve user by Telegram ID
+		var user *UserConfig
+		if msg.From != nil && users != nil {
+			user = resolveUserByTelegramID(users, msg.From.ID)
+		}
+
+		// Access control
+		if user == nil && !botCfg.AllowUnregistered {
+			log.Printf("Rejected message from unregistered user %d (%s)",
+				msg.From.ID, msg.From.Username)
 			return
 		}
 
@@ -293,7 +299,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(logText, 100))
 
 		// Process asynchronously
-		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, prompts, verboseTools, newsConfigPath, mcpMgr, globalThink, msg)
+		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, promptsTemplate, defaultLang, verboseTools, newsConfigPath, mcpMgr, globalThink, msg, user)
 	})
 
 	server := &http.Server{
@@ -330,8 +336,8 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 }
 
 func handleBotMessage(token string, cfg modelConfig, modelID string,
-	showThinking bool, logf func(string, ...any), prompts *Prompts,
-	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode, msg *TGMessage) {
+	showThinking bool, logf func(string, ...any), promptsTemplate *Prompts, defaultLang string,
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode, msg *TGMessage, user *UserConfig) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -339,6 +345,31 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			_ = sendToChat(token, msg.Chat.ID, fmt.Sprintf("Internal error: %v", r))
 		}
 	}()
+
+	// Set per-user overrides from user config
+	if user != nil {
+		if imapCfg := userImapConfig(user); imapCfg != nil {
+			tools.SetImapOverride(imapCfg)
+			defer tools.ClearImapOverride()
+		}
+		haEnabled := user.HA != nil && user.HA.Enabled
+		tools.SetHAEnabled(haEnabled)
+		defer tools.ClearHAEnabled()
+	}
+
+	// Apply per-user language to prompts
+	lang := defaultLang
+	if user != nil && user.Language != "" {
+		lang = user.Language
+	}
+	prompts := *promptsTemplate // copy template
+	applyLanguage(&prompts, lang)
+
+	// Compute MCP overrides from user config
+	var mcpOverrides map[string]bool
+	if user != nil && len(user.MCP) > 0 {
+		mcpOverrides = user.MCP
+	}
 
 	chatID := msg.Chat.ID
 	cancel := startTyping(token, chatID)
@@ -427,7 +458,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
-		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, prompts, mcpMgr, mcpNames, think)
+		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0
@@ -437,7 +468,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 				sinceHours = h
 			}
 		}
-		result, err = runMailSummary(cfg, modelID, showThinking, debugOut, logf, prompts, sinceHours, mcpMgr, mcpNames, think)
+		result, err = runMailSummary(cfg, modelID, showThinking, debugOut, logf, &prompts, sinceHours, mcpMgr, mcpNames, think, mcpOverrides)
 
 	default:
 		query := text
@@ -476,7 +507,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 		var contentBuf strings.Builder
 		contentOut := io.MultiWriter(&contentBuf, debugOut)
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, prompts, mcpMgr, mcpNames, think, images, videos, history)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, history, mcpOverrides)
 		// runQuery returns only the last round's content; contentBuf has
 		// accumulated content from ALL rounds (including intermediate tool-calling
 		// rounds). Use it as fallback when the final response is empty.

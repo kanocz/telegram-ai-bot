@@ -1,0 +1,34 @@
+{
+  "alice": {
+    "telegram_id": 123456789,
+    "language": "čeština",
+    "chats": {
+      "news": 2342344,
+      "mail": 3453454,
+      "other": 3453454
+    },
+    "imap": {
+      "server": "imap.example.com:993",
+      "username": "alice@example.com",
+      "password": "alice-password"
+    },
+    "homeassistant": {
+      "enabled": true
+    },
+    "mcp": {
+      "context7": true,
+      "github": false
+    }
+  },
+  "bob": {
+    "telegram_id": 987654321,
+    "chats": {
+      "mail": 3453454
+    },
+    "imap": {
+      "server": "mail.other.com:993",
+      "username": "bob@other.com",
+      "password": "bob-password"
+    }
+  }
+}

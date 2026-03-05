@@ -239,7 +239,7 @@ func extractJSON[T any](raw string) (T, error) {
 
 // --- Main pipeline ---
 
-func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), configPath string, prompts *Prompts, mcpMgr *MCPManager, mcpNames []string, think thinkMode) (string, error) {
+func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), configPath string, prompts *Prompts, mcpMgr *MCPManager, mcpNames []string, think thinkMode, mcpOverrides map[string]bool) (string, error) {
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -289,8 +289,8 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 	wfsTool, _ := tools.Get("web_fetch_summarize")
 	subAgentDefs := []tools.Definition{wfsTool.Def}
 	var subAgentExec toolExecFunc
-	if mcpMgr != nil && len(mcpNames) > 0 {
-		subAgentDefs = append(subAgentDefs, mcpMgr.ActiveToolDefs(mcpNames)...)
+	if mcpMgr != nil && (len(mcpNames) > 0 || len(mcpOverrides) > 0) {
+		subAgentDefs = append(subAgentDefs, mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)...)
 		subAgentExec = makeToolExec(mcpMgr, mcpNames)
 	}
 

@@ -92,7 +92,7 @@ func installToolPrompts(p *Prompts) {
 }
 
 const defaultSystemPrompt = `You are a helpful assistant. You have access to tools for fetching web content, reading email, and controlling smart home devices via Home Assistant.
-Response language: {language}.
+Respond in the same language the user writes in. Default language (for automated tasks like mail/news digest): {language}.
 
 Rules:
 - When summarizing multiple emails, prefer imap_summarize_message (processes each email in a separate context) over imap_read_message to avoid exceeding the context window.

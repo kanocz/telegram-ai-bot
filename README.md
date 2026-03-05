@@ -24,15 +24,42 @@ New format (with language):
 }
 ```
 
-### imap.json — email access
+### users.json — per-user settings
 
 ```json
 {
-  "server": "imap.example.com:993",
-  "username": "user@example.com",
-  "password": "your-password"
+  "alice": {
+    "telegram_id": 123456789,
+    "language": "čeština",
+    "chats": {
+      "news": 2342344,
+      "mail": 3453454,
+      "other": 3453454
+    },
+    "imap": {
+      "server": "imap.example.com:993",
+      "username": "alice@example.com",
+      "password": "alice-password"
+    },
+    "homeassistant": {
+      "enabled": true
+    },
+    "mcp": {
+      "context7": true,
+      "github": false
+    }
+  }
 }
 ```
+
+- Key = human-readable name (used by CLI flag `-user alice`)
+- `telegram_id` = Telegram user ID (bot auto-matches by this)
+- `language` = default response language for automated tasks (optional; the model always responds in the language of the question for interactive queries)
+- `chats` = Telegram chat IDs for routing (news/mail/other); used by `-telegram` flag
+- `imap` = IMAP credentials (optional; if missing, IMAP tools are hidden)
+- `homeassistant` = HA access (optional; if missing or `enabled: false`, HA tools are hidden)
+- `mcp` = per-user MCP server overrides (optional; `true` enables, `false` disables)
+- CLI: if only one user exists, it is auto-selected without `-user`
 
 ### homeassistant.json — Home Assistant
 
@@ -74,20 +101,15 @@ See `mcp.json.example` for a template.
 ```json
 {
   "token": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-  "chat_id": {
-    "news": [-1234585163, 987654321],
-    "mail": [-1234585163],
-    "other": [-1234885163]
-  },
   "bot": {
     "webhook_url": "https://example.com/hook/SECRET",
     "listen": ":8443",
-    "allowed_users": [123456789]
+    "allow_unregistered_users": false
   }
 }
 ```
 
-The `bot` section is optional (only required for `-telegram-bot`).
+The `bot` section is optional (only required for `-telegram-bot`). Chat routing and user access are configured in `users.json`.
 
 ## Usage
 
@@ -107,6 +129,7 @@ The `bot` section is optional (only required for `-telegram-bot`).
 - `-request-debug` — dump API request JSON to stderr (base64 data truncated)
 - `-show-subagents` — show sub-agent activity: input, thinking, and output (indented with ` | `)
 - `-verbose-tools` — show tool call arguments and results (results truncated to 500 chars)
+- `-user name` — select user from `users.json` by name (auto-selects if only one user); enables IMAP, HA, MCP per user config
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
 - `-news-summary` — cross-referenced news digest: load URLs from file, sub-agents analyze each source (with `web_fetch` access), final summary grouped by events with Europe focus
 - `-news-config path` — path to news config file (default `news.json`)
@@ -218,6 +241,7 @@ runs a sub-agent on each group, then performs final categorization:
 
 ```bash
 ./ai-webfetch -mail-summary
+./ai-webfetch -mail-summary -user alice
 ./ai-webfetch -mail-summary -show-subagents
 ```
 
@@ -253,12 +277,12 @@ Instead of terminal output, results are sent to a Telegram chat:
 
 ### Multi-chat routing
 
-Results are sent to different chats by category:
+Results are sent to the user's configured chat by category (from `users.json`):
 
 ```bash
-./ai-webfetch -news-summary -telegram              # → chats.news[]
-./ai-webfetch -mail-summary -telegram              # → chats.mail[]
-./ai-webfetch -telegram "query"                    # → chats.other[]
+./ai-webfetch -user alice -news-summary -telegram   # → alice's chats.news
+./ai-webfetch -user alice -mail-summary -telegram   # → alice's chats.mail
+./ai-webfetch -user alice -telegram "query"          # → alice's chats.other
 ```
 
 Override chat ID for a single invocation:
