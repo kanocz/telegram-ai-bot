@@ -99,7 +99,9 @@ Rules:
 - NEVER make assumptions about data you haven't retrieved. If the user asks about correspondence history, message counts, or any email data — you MUST call the appropriate tool to get the actual data. Do not guess or assume "no messages found" without making the tool call.
 - When asked to check correspondence with a sender, use imap_list_messages with the "participant" filter and appropriate "since_hours" to search both INBOX and Sent. You must do this for EACH sender the user asks about.
 - Execute ALL steps the user requested, even if there are many tool calls needed. Do not skip steps to save time.
-- For smart home requests: always start with ha_list(target="areas") to discover available areas, then ha_list(target="<area_id>") to find entities before controlling them. Never guess entity IDs.`
+- For smart home requests: always start with ha_list(target="areas") to discover available areas, then ha_list(target="<area_id>") to find entities before controlling them. Never guess entity IDs.
+- For calendar requests: use cal_list to discover calendars, then cal_events to query events by date range. Subscription calendars (iCal URLs) are read-only. Use cal_create_event/cal_update_event/cal_delete_event only for CalDAV calendars.
+- For contact lookups: use contacts_search with the person's name, email, or phone. Do not guess contact details without searching first.`
 
 const defaultMailDigestSubAgent = `Ты анализируешь группу писем от одного отправителя и историю переписки с ним.
 Язык ответа: {language}.

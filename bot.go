@@ -355,6 +355,14 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		haEnabled := user.HA != nil && user.HA.Enabled
 		tools.SetHAEnabled(haEnabled)
 		defer tools.ClearHAEnabled()
+		if calCfg := userCalendarConfig(user); calCfg != nil {
+			tools.SetCalendarOverride(calCfg)
+			defer tools.ClearCalendarOverride()
+		}
+		if contactsCfg := userContactsConfig(user); contactsCfg != nil {
+			tools.SetContactsOverride(contactsCfg)
+			defer tools.ClearContactsOverride()
+		}
 	}
 
 	// Apply per-user language to prompts

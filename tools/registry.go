@@ -87,11 +87,15 @@ func TakePendingImages() []string {
 }
 
 // All returns the definitions of all registered tools.
-// IMAP tools (imap_ prefix) are excluded when no IMAP config is set for the current goroutine.
-// HA tools (ha_ prefix) are excluded when HA is not enabled for the current goroutine.
+// Tools are filtered by prefix based on per-goroutine availability.
 func All() []Definition {
 	hideImap := !ImapAvailable()
 	hideHA := !HAAvailable()
+	hideCal := !CalendarAvailable()
+	hideCalWrite := hideCal || !CalendarWritable()
+	hideContacts := !ContactsAvailable()
+	hideContactsWrite := hideContacts || !ContactsWritable()
+
 	defs := make([]Definition, 0, len(registry))
 	for _, t := range registry {
 		name := t.Def.Function.Name
@@ -101,7 +105,28 @@ func All() []Definition {
 		if hideHA && strings.HasPrefix(name, "ha_") {
 			continue
 		}
+		if hideCal && strings.HasPrefix(name, "cal_") {
+			continue
+		}
+		if hideContacts && strings.HasPrefix(name, "contacts_") {
+			continue
+		}
+		// Hide write-only tools when not writable
+		if hideCalWrite && isCalWriteTool(name) {
+			continue
+		}
+		if hideContactsWrite && isContactsWriteTool(name) {
+			continue
+		}
 		defs = append(defs, t.Def)
 	}
 	return defs
+}
+
+func isCalWriteTool(name string) bool {
+	return name == "cal_create_event" || name == "cal_update_event" || name == "cal_delete_event"
+}
+
+func isContactsWriteTool(name string) bool {
+	return name == "contacts_create" || name == "contacts_update" || name == "contacts_delete"
 }

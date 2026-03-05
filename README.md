@@ -1,6 +1,6 @@
 # ai-webfetch
 
-Telegram bot and CLI tool: AI assistant with web, email (IMAP), and Home Assistant access.
+Telegram bot and CLI tool: AI assistant with web, email (IMAP), Home Assistant, calendar (CalDAV/iCal), and contacts (CardDAV) access.
 
 ## Configuration
 
@@ -58,6 +58,8 @@ New format (with language):
 - `chats` = Telegram chat IDs for routing (news/mail/other); used by `-telegram` flag
 - `imap` = IMAP credentials (optional; if missing, IMAP tools are hidden)
 - `homeassistant` = HA access (optional; if missing or `enabled: false`, HA tools are hidden)
+- `calendar` = CalDAV/iCal settings (optional; if missing, calendar tools are hidden). Can have `server` (CalDAV), `ical_urls` (subscriptions), or both. `writable: true` enables create/update/delete. A user can have only `ical_urls` without a CalDAV server for read-only calendar access.
+- `contacts` = CardDAV settings (optional; if missing, contacts tools are hidden). `writable: true` enables create/update/delete.
 - `mcp` = per-user MCP server overrides (optional; `true` enables, `false` disables)
 - CLI: if only one user exists, it is auto-selected without `-user`
 
@@ -167,6 +169,17 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 | `ha_state` | Detailed entity state with domain-specific attributes |
 | `ha_call` | Call a Home Assistant service (turn on/off, set temperature, etc.) |
 | `ha_camera_snapshot` | Capture a snapshot from a Home Assistant camera (image returned for visual analysis) |
+| `cal_list` | List CalDAV calendars and iCal subscriptions |
+| `cal_events` | Query events by date range, search text, calendar filter |
+| `cal_event` | Full event details by path (CalDAV only) |
+| `cal_create_event` | Create a new CalDAV event (requires `writable: true`) |
+| `cal_update_event` | Update an existing CalDAV event (requires `writable: true`) |
+| `cal_delete_event` | Delete a CalDAV event (requires `writable: true`) |
+| `contacts_search` | Search contacts by name, email, or phone |
+| `contacts_get` | Full contact details by path |
+| `contacts_create` | Create a new CardDAV contact (requires `writable: true`) |
+| `contacts_update` | Update an existing contact (requires `writable: true`) |
+| `contacts_delete` | Delete a contact (requires `writable: true`) |
 | `fs_list` | List directory contents (requires `-filesystem`) |
 | `fs_read` | Read file contents (requires `-filesystem`) |
 | `fs_info` | File/directory metadata (requires `-filesystem`) |
@@ -464,6 +477,25 @@ Example Telegram conversation:
 > The living room is currently being used as a workspace.
 
 The assistant used `ha_list` to find entities in the area, `ha_camera_snapshot` to capture a frame from the camera, and `ha_state` to read sensor values — all automatically from a single natural-language question.
+
+### Calendar
+
+Query calendars and events (requires `calendar` in `users.json`):
+
+```bash
+./ai-webfetch -user alice "What's on my calendar this week?"
+./ai-webfetch -user alice "Create a meeting tomorrow at 14:00-15:00 called Team Standup"
+./ai-webfetch -user alice "Show my events for March 2026"
+```
+
+### Contacts
+
+Search and manage contacts (requires `contacts` in `users.json`):
+
+```bash
+./ai-webfetch -user alice "Find John's phone number"
+./ai-webfetch -user alice "What's the email for ACME Corp?"
+```
 
 ### Debugging sub-agents
 

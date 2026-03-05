@@ -331,6 +331,12 @@ func main() {
 		}
 		haEnabled := user.HA != nil && user.HA.Enabled
 		tools.SetHAEnabled(haEnabled)
+		if calCfg := userCalendarConfig(user); calCfg != nil {
+			tools.SetCalendarOverride(calCfg)
+		}
+		if contactsCfg := userContactsConfig(user); contactsCfg != nil {
+			tools.SetContactsOverride(contactsCfg)
+		}
 		// User language (overridden by CLI flag)
 		if user.Language != "" && *languageFlag == "" {
 			language = user.Language

@@ -4,13 +4,19 @@ go 1.24.0
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
+	github.com/apognu/gocal v0.9.1
+	github.com/emersion/go-ical v0.0.0-20240127095438-fc1c9d8fb2b6
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-message v0.18.2
+	github.com/emersion/go-vcard v0.0.0-20230815062825-8fda7d206ec9
+	github.com/emersion/go-webdav v0.7.0
+	github.com/go-git/go-git/v5 v5.17.0
 	golang.org/x/net v0.47.0
 )
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
+	github.com/ChannelMeter/iso8601duration v0.0.0-20150204201828-8da3af7a2a61 // indirect
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
@@ -20,13 +26,13 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.8.0 // indirect
-	github.com/go-git/go-git/v5 v5.17.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
+	github.com/teambition/rrule-go v1.8.2 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect

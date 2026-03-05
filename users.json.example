@@ -15,6 +15,21 @@
     "homeassistant": {
       "enabled": true
     },
+    "calendar": {
+      "server": "https://nextcloud.example.com/remote.php/dav",
+      "username": "alice",
+      "password": "app-password",
+      "writable": true,
+      "ical_urls": [
+        { "name": "Czech Holidays", "url": "https://example.com/holidays-cz.ics" }
+      ]
+    },
+    "contacts": {
+      "server": "https://nextcloud.example.com/remote.php/dav",
+      "username": "alice",
+      "password": "app-password",
+      "writable": false
+    },
     "mcp": {
       "context7": true,
       "github": false
@@ -29,6 +44,11 @@
       "server": "mail.other.com:993",
       "username": "bob@other.com",
       "password": "bob-password"
+    },
+    "calendar": {
+      "ical_urls": [
+        { "name": "Public Holidays", "url": "https://example.com/holidays.ics" }
+      ]
     }
   }
 }

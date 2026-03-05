@@ -29,14 +29,39 @@ type UserHAConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// UserCalendarConfig holds CalDAV/iCal calendar settings for a user.
+type UserCalendarConfig struct {
+	Server   string        `json:"server,omitempty"`
+	Username string        `json:"username,omitempty"`
+	Password string        `json:"password,omitempty"`
+	Writable bool          `json:"writable,omitempty"`
+	ICalURLs []UserICalURL `json:"ical_urls,omitempty"`
+}
+
+// UserICalURL is a read-only iCal subscription URL.
+type UserICalURL struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// UserContactsConfig holds CardDAV contacts settings for a user.
+type UserContactsConfig struct {
+	Server   string `json:"server"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Writable bool   `json:"writable,omitempty"`
+}
+
 // UserConfig holds all per-user settings.
 type UserConfig struct {
-	TelegramID int64           `json:"telegram_id"`
-	Language   string          `json:"language,omitempty"`
-	Chats      UserChats       `json:"chats"`
-	Imap       *UserImapConfig `json:"imap,omitempty"`
-	HA         *UserHAConfig   `json:"homeassistant,omitempty"`
-	MCP        map[string]bool `json:"mcp,omitempty"`
+	TelegramID int64               `json:"telegram_id"`
+	Language   string              `json:"language,omitempty"`
+	Chats      UserChats           `json:"chats"`
+	Imap       *UserImapConfig     `json:"imap,omitempty"`
+	HA         *UserHAConfig       `json:"homeassistant,omitempty"`
+	Calendar   *UserCalendarConfig `json:"calendar,omitempty"`
+	Contacts   *UserContactsConfig `json:"contacts,omitempty"`
+	MCP        map[string]bool     `json:"mcp,omitempty"`
 }
 
 var (
@@ -98,6 +123,45 @@ func userImapConfig(u *UserConfig) *tools.ImapUserConfig {
 		Server:   u.Imap.Server,
 		Username: u.Imap.Username,
 		Password: u.Imap.Password,
+	}
+}
+
+// userCalendarConfig converts UserCalendarConfig to tools.CalendarConfig.
+func userCalendarConfig(u *UserConfig) *tools.CalendarConfig {
+	if u == nil || u.Calendar == nil {
+		return nil
+	}
+	c := u.Calendar
+	// Need either a CalDAV server or iCal URLs
+	if c.Server == "" && len(c.ICalURLs) == 0 {
+		return nil
+	}
+	cfg := &tools.CalendarConfig{
+		Server:   c.Server,
+		Username: c.Username,
+		Password: c.Password,
+		Writable: c.Writable,
+	}
+	for _, u := range c.ICalURLs {
+		cfg.ICalURLs = append(cfg.ICalURLs, tools.ICalURL{Name: u.Name, URL: u.URL})
+	}
+	return cfg
+}
+
+// userContactsConfig converts UserContactsConfig to tools.ContactsConfig.
+func userContactsConfig(u *UserConfig) *tools.ContactsConfig {
+	if u == nil || u.Contacts == nil {
+		return nil
+	}
+	c := u.Contacts
+	if c.Server == "" {
+		return nil
+	}
+	return &tools.ContactsConfig{
+		Server:   c.Server,
+		Username: c.Username,
+		Password: c.Password,
+		Writable: c.Writable,
 	}
 }
 
