@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"runtime"
 	"sort"
@@ -609,6 +612,54 @@ func execHACall(rawArgs json.RawMessage) (string, error) {
 	return formatEntityState(es), nil
 }
 
+func execHACameraSnapshot(rawArgs json.RawMessage) (string, error) {
+	var args struct {
+		EntityID string `json:"entity_id"`
+	}
+	json.Unmarshal(rawArgs, &args)
+	if args.EntityID == "" {
+		return "", fmt.Errorf("entity_id is required")
+	}
+
+	cfg, err := getHAConfig()
+	if err != nil {
+		return "", err
+	}
+
+	url := cfg.URL + "/api/camera_proxy/" + args.EntityID
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("camera proxy request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("camera proxy error %d: %s", resp.StatusCode, body)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read camera image: %w", err)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+
+	dataURI := fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(data))
+	SetPendingImages([]string{dataURI})
+
+	return fmt.Sprintf("Snapshot captured from %s (%d bytes, %s). The image is attached.", args.EntityID, len(data), contentType), nil
+}
+
 // --- Tool registration ---
 
 func init() {
@@ -689,5 +740,26 @@ func init() {
 			},
 		},
 		Execute: execHACall,
+	})
+
+	Register(&Tool{
+		Def: Definition{
+			Type: "function",
+			Function: Function{
+				Name:        "ha_camera_snapshot",
+				Description: "Capture a snapshot image from a Home Assistant camera entity. Returns the image for visual analysis.",
+				Parameters: Parameters{
+					Type: "object",
+					Properties: map[string]Property{
+						"entity_id": {
+							Type:        "string",
+							Description: "Camera entity ID, e.g. camera.living_room",
+						},
+					},
+					Required: []string{"entity_id"},
+				},
+			},
+		},
+		Execute: execHACameraSnapshot,
 	})
 }

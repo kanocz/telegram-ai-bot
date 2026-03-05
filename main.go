@@ -516,18 +516,30 @@ func runQuery(cfg modelConfig, modelID string, query string,
 				toolResult = res
 			}
 
+			// Check if the tool produced images (e.g. camera snapshot)
+			var toolImages []ImageURL
+			if imgURIs := tools.TakePendingImages(); len(imgURIs) > 0 {
+				for _, uri := range imgURIs {
+					toolImages = append(toolImages, ImageURL{URL: uri})
+				}
+			}
+
 			if verboseTools {
 				preview := toolResult
 				if len(preview) > 500 {
 					preview = preview[:500] + "..."
 				}
 				logf("%s  result: %s%s\n", colorDim, preview, colorReset)
+				if len(toolImages) > 0 {
+					logf("%s  images: %d%s\n", colorDim, len(toolImages), colorReset)
+				}
 			}
 
 			messages = append(messages, Message{
 				Role:       "tool",
 				Content:    toolResult,
 				ToolCallID: tc.ID,
+				Images:     toolImages,
 			})
 		}
 	}

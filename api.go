@@ -57,7 +57,8 @@ type Message struct {
 // When Images is empty, Content is serialized as a plain string (backward-compatible).
 // When Images is present, Content becomes an array of content blocks.
 func (m Message) MarshalJSON() ([]byte, error) {
-	if len(m.Images) == 0 && len(m.Videos) == 0 {
+	hasMedia := len(m.Images) > 0 || len(m.Videos) > 0
+	if !hasMedia {
 		// Standard encoding — same as default struct marshal.
 		type plain Message // avoid recursion
 		return json.Marshal(plain(m))
@@ -505,10 +506,19 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 				toolResult = toolResult[:maxToolResultChars] + "\n[...truncated]"
 			}
 
+			// Check if the tool produced images (e.g. camera snapshot)
+			var toolImages []ImageURL
+			if imgURIs := tools.TakePendingImages(); len(imgURIs) > 0 {
+				for _, uri := range imgURIs {
+					toolImages = append(toolImages, ImageURL{URL: uri})
+				}
+			}
+
 			messages = append(messages, Message{
 				Role:       "tool",
 				Content:    toolResult,
 				ToolCallID: tc.ID,
+				Images:     toolImages,
 			})
 		}
 	}

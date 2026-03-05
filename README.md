@@ -166,6 +166,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 | `ha_list` | Discover Home Assistant areas (with aliases) and entities in an area |
 | `ha_state` | Detailed entity state with domain-specific attributes |
 | `ha_call` | Call a Home Assistant service (turn on/off, set temperature, etc.) |
+| `ha_camera_snapshot` | Capture a snapshot from a Home Assistant camera (image returned for visual analysis) |
 | `fs_list` | List directory contents (requires `-filesystem`) |
 | `fs_read` | Read file contents (requires `-filesystem`) |
 | `fs_info` | File/directory metadata (requires `-filesystem`) |
@@ -438,7 +439,31 @@ Control Home Assistant devices using natural language (requires `homeassistant.j
 ./ai-webfetch "Open the blinds in the living room"
 ```
 
-The assistant automatically discovers areas and entities via `ha_list`, reads states with `ha_state`, and controls devices with `ha_call`. Area and entity aliases configured in Home Assistant (including Voice assistant aliases) are used for matching.
+The assistant automatically discovers areas and entities via `ha_list`, reads states with `ha_state`, controls devices with `ha_call`, and captures camera snapshots via `ha_camera_snapshot` for visual analysis. Area and entity aliases configured in Home Assistant (including Voice assistant aliases) are used for matching.
+
+Example Telegram conversation:
+
+> **You:** What's going on in the living room?
+>
+> **Bot:** Here's what's happening in the living room right now:
+>
+> **People:**
+> - One person at the desk working on a laptop
+> - Another person sitting in an armchair with a white blanket
+>
+> **Conditions:**
+> - Temperature: 22.0°C
+> - Humidity: 24%
+> - Lights: off
+> - Blinds: open
+>
+> **Notes:**
+> - Various items on the tables (books, boxes, fruit, bottles, plants)
+> - Camera is actively recording
+>
+> The living room is currently being used as a workspace.
+
+The assistant used `ha_list` to find entities in the area, `ha_camera_snapshot` to capture a frame from the camera, and `ha_state` to read sensor values — all automatically from a single natural-language question.
 
 ### Debugging sub-agents
 

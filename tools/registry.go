@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -63,6 +64,26 @@ func Register(t *Tool) {
 func Get(name string) (*Tool, bool) {
 	t, ok := registry[name]
 	return t, ok
+}
+
+// pendingImages allows tools to return images alongside text results.
+// Key: goroutineID, Value: []string (data URIs).
+var pendingImages sync.Map
+
+// SetPendingImages stores image data URIs for the calling goroutine.
+// Called by tools that produce images (e.g. ha_camera_snapshot).
+func SetPendingImages(images []string) {
+	pendingImages.Store(goroutineID(), images)
+}
+
+// TakePendingImages retrieves and removes any images set by the last tool call.
+// Called by the execution loop after each tool execution.
+func TakePendingImages() []string {
+	v, ok := pendingImages.LoadAndDelete(goroutineID())
+	if !ok {
+		return nil
+	}
+	return v.([]string)
 }
 
 // All returns the definitions of all registered tools.
