@@ -331,12 +331,13 @@ Bot commands:
 - `/mcp server /news` — news digest with MCP tools
 - `/mcp server /mail [hours]` — mail digest with MCP tools
 - `/skills name1,name2 <query>` — query with skills injected into system prompt
+- `/<skillname> <query>` — skill shortcut (auto-loads the skill if it exists and is not a reserved command)
 - any text — free-form query with tool-loop
 - photo with caption — vision query (caption is the prompt; no caption = "Describe this image")
 - video with caption — vision query (caption is the prompt; no caption = "Describe this video")
 - **reply to any message** — continues the conversation with full context
 
-Prefixes can be combined: `/think /skills code-review /mcp github what's new?`
+Prefixes can be combined: `/think /skills code-review /mcp github what's new?` or use skill shortcuts: `/think /reminder take out trash tomorrow`
 
 #### Conversation threading
 
@@ -401,9 +402,15 @@ Use `-skills-dir path` to override and search only in a specific directory.
 # Via /skills prefix in query
 ./ai-webfetch "/skills code-review make code review"
 
+# Skill shortcut — auto-loads the skill by name
+./ai-webfetch "/reminder take out trash tomorrow"
+
 # Combined with other prefixes
 ./ai-webfetch "/nothink /skills haiku hello"
+./ai-webfetch "/think /reminder buy groceries"
 ```
+
+Skill shortcuts work for any `/name` that matches an existing skill file and is not a reserved command (`/news`, `/mail`, `/think`, `/nothink`, `/mcp`, `/skills`, `/start`, `/help`).
 
 ### Thinking mode
 

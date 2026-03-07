@@ -604,6 +604,24 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		think = thinkDisable
 	}
 
+	// Parse /skills prefix and skill shortcuts (before /mcp so they can be combined)
+	skillsPrefixNames, text := parseSkillsPrefix(text)
+	skillDirs := skillSearchDirs()
+	var skillNames []string
+	if shortcutName, shortcutQuery := parseSkillShortcut(text, skillDirs); shortcutName != "" {
+		skillNames = []string{shortcutName}
+		text = shortcutQuery
+	}
+	skillNames = dedup(skillNames, skillsPrefixNames)
+	if len(skillNames) > 0 {
+		skillText, skillErr := loadSkills(skillDirs, skillNames)
+		if skillErr != nil {
+			log.Printf("Skills error: %v", skillErr)
+		} else {
+			prompts.SystemPrompt += skillText
+		}
+	}
+
 	// Parse /mcp prefix (works for all commands: /mcp github /news, /mcp github query, etc.)
 	mcpNames, text := parseMCPPrefix(text)
 	if len(mcpNames) > 0 {

@@ -226,13 +226,20 @@ func main() {
 		}
 	}
 	skillNames := dedup(flagSkillNames, skillsPrefixNames)
+
+	// Skill shortcut: "/reminder do something" → load skill "reminder"
+	var skillDirs []string
+	if *skillsDirFlag != "" {
+		skillDirs = []string{*skillsDirFlag}
+	} else {
+		skillDirs = skillSearchDirs()
+	}
+	if shortcutName, shortcutQuery := parseSkillShortcut(query, skillDirs); shortcutName != "" {
+		skillNames = dedup(skillNames, []string{shortcutName})
+		query = shortcutQuery
+	}
+
 	if len(skillNames) > 0 {
-		var skillDirs []string
-		if *skillsDirFlag != "" {
-			skillDirs = []string{*skillsDirFlag}
-		} else {
-			skillDirs = skillSearchDirs()
-		}
 		skillText, err := loadSkills(skillDirs, skillNames)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skills error: %v\n", err)

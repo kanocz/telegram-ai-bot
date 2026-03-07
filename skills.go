@@ -98,3 +98,42 @@ func loadSkills(dirs []string, names []string) (string, error) {
 	}
 	return sb.String(), nil
 }
+
+// Reserved slash-command names that must not be treated as skill shortcuts.
+var reservedCommands = map[string]bool{
+	"think": true, "nothink": true, "mcp": true, "skills": true,
+	"news": true, "mail": true, "start": true, "help": true,
+}
+
+// parseSkillShortcut checks if query starts with "/name" where name
+// matches an existing skill file (and is not a reserved command).
+// Returns (skillName, remainingQuery) or ("", original) if no match.
+func parseSkillShortcut(s string, skillDirs []string) (string, string) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "/") {
+		return "", s
+	}
+
+	// Extract the command name (first word after /)
+	rest := s[1:]
+	sepIdx := strings.IndexAny(rest, " \n")
+	var name, query string
+	if sepIdx < 0 {
+		name = rest
+		query = ""
+	} else {
+		name = rest[:sepIdx]
+		query = strings.TrimSpace(rest[sepIdx+1:])
+	}
+
+	if name == "" || reservedCommands[name] {
+		return "", s
+	}
+
+	// Check if skill exists (without reading full content)
+	if _, err := findSkill(skillDirs, name); err != nil {
+		return "", s
+	}
+
+	return name, query
+}
