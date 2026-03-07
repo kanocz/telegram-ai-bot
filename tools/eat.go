@@ -195,7 +195,7 @@ Return ONLY the JSON array, no other text.`
 
 func processEatItem(item eatItem, username, date string) (string, error) {
 	// Search catalog
-	match, err := findCatalogMatch(item.Name)
+	match, err := findCatalogMatch(item.Name, item.Unit)
 	if err != nil {
 		return "", err
 	}
@@ -268,7 +268,7 @@ func processEatItem(item eatItem, username, date string) (string, error) {
 
 // --- Catalog search cascade ---
 
-func findCatalogMatch(name string) (*catalogItem, error) {
+func findCatalogMatch(name, userUnit string) (*catalogItem, error) {
 	// Load full catalog upfront — we need complete serving data (with quantity/unit)
 	// that catalog_search doesn't return.
 	catalog := loadFullCatalog()
@@ -281,7 +281,7 @@ func findCatalogMatch(name string) (*catalogItem, error) {
 	if err == nil {
 		var sr catalogSearchResult
 		if json.Unmarshal([]byte(searchResult), &sr) == nil && len(sr.Results) > 0 {
-			picked := pickSearchResult(sr.Results)
+			picked := pickSearchResult(sr.Results, userUnit)
 			if picked != nil {
 				return enrichFromCatalog(picked, catalog), nil
 			}
@@ -298,7 +298,7 @@ func findCatalogMatch(name string) (*catalogItem, error) {
 		if err == nil {
 			var sr catalogSearchResult
 			if json.Unmarshal([]byte(searchResult), &sr) == nil && len(sr.Results) > 0 {
-				picked := pickSearchResult(sr.Results)
+				picked := pickSearchResult(sr.Results, userUnit)
 				if picked != nil {
 					return enrichFromCatalog(picked, catalog), nil
 				}
@@ -374,17 +374,90 @@ func enrichFromCatalog(item *catalogItem, catalog map[string]catalogItem) *catal
 	return item
 }
 
-// pickSearchResult handles single vs. multiple search results.
-// Returns nil if user chose to skip.
-func pickSearchResult(results []catalogSearchMatch) *catalogItem {
-	if len(results) == 1 {
-		return searchResultToItem(results[0])
+// pickSearchResult deduplicates results by item ID (same product, different
+// servings) and asks only when there are truly different products.
+// When the user specified a unit (г, мл, шт), auto-selects the matching
+// serving variant instead of prompting.
+func pickSearchResult(results []catalogSearchMatch, userUnit string) *catalogItem {
+	// Group results by item ID
+	type group struct {
+		first   catalogSearchMatch
+		results []catalogSearchMatch
+	}
+	groups := map[string]*group{}
+	var order []string
+	for _, r := range results {
+		g, ok := groups[r.ID]
+		if !ok {
+			g = &group{first: r}
+			groups[r.ID] = g
+			order = append(order, r.ID)
+		}
+		g.results = append(g.results, r)
+	}
+
+	// For groups with multiple servings of the same product,
+	// auto-select based on user's unit.
+	var unique []catalogSearchMatch
+	for _, id := range order {
+		g := groups[id]
+		if len(g.results) == 1 {
+			unique = append(unique, g.first)
+			continue
+		}
+		// Multiple servings for same product — pick best match for user's unit
+		best := autoSelectServing(g.results, userUnit)
+		unique = append(unique, best)
+	}
+
+	if len(unique) == 1 {
+		return searchResultToItem(unique[0])
 	}
 	if AskAvailable() {
-		item, _ := askUserToPickResult(results)
+		item, _ := askUserToPickResult(unique)
 		return item
 	}
-	return searchResultToItem(results[0])
+	return searchResultToItem(unique[0])
+}
+
+// autoSelectServing picks the best serving variant from same-product results
+// based on the user's requested unit.
+func autoSelectServing(results []catalogSearchMatch, userUnit string) catalogSearchMatch {
+	if isWeightUnit(userUnit) {
+		// User wants grams/ml — prefer 100g/100ml serving
+		for _, r := range results {
+			lbl := strings.ToLower(r.Serving.Label)
+			if lbl == "100g" || lbl == "100 g" || lbl == "100г" || lbl == "100 г" ||
+				lbl == "100ml" || lbl == "100 ml" || lbl == "100мл" || lbl == "100 мл" {
+				return r
+			}
+		}
+	} else if isPieceUnit(userUnit) {
+		// User wants pieces/portions — prefer шт/порция serving
+		for _, r := range results {
+			lbl := strings.ToLower(r.Serving.Label)
+			if lbl == "шт" || lbl == "pcs" || lbl == "порция" || lbl == "portion" {
+				return r
+			}
+		}
+	}
+	return results[0]
+}
+
+func isWeightUnit(unit string) bool {
+	switch unit {
+	case "г", "g", "гр", "мл", "ml", "":
+		return true
+	}
+	return false
+}
+
+func isPieceUnit(unit string) bool {
+	switch unit {
+	case "шт", "pcs", "порция":
+		return true
+	}
+	return false
 }
 
 func askUserToPickResult(results []catalogSearchMatch) (*catalogItem, error) {
