@@ -81,22 +81,56 @@ func findSkill(dirs []string, name string) ([]byte, error) {
 	return nil, fmt.Errorf("skill %q not found in any of: %s", name, strings.Join(dirs, ", "))
 }
 
-// loadSkills reads skill markdown files and returns concatenated text.
-// If dirs has one entry (explicit -skills-dir), only that dir is searched.
-// Otherwise all default search dirs are used.
-func loadSkills(dirs []string, names []string) (string, error) {
+// parseSkillFrontmatter extracts YAML-like frontmatter from skill data.
+// If the data starts with "---\n", it looks for a closing "---\n" and
+// extracts "mcp:" values (comma-separated server names).
+// Returns the body (without frontmatter) and any MCP server names found.
+func parseSkillFrontmatter(data []byte) ([]byte, []string) {
+	s := string(data)
+	if !strings.HasPrefix(s, "---\n") {
+		return data, nil
+	}
+	end := strings.Index(s[4:], "\n---\n")
+	if end < 0 {
+		return data, nil
+	}
+	frontmatter := s[4 : 4+end]
+	body := []byte(s[4+end+5:])
+
+	var mcpNames []string
+	for _, line := range strings.Split(frontmatter, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "mcp:") {
+			val := strings.TrimSpace(line[4:])
+			for _, name := range strings.Split(val, ",") {
+				name = strings.TrimSpace(name)
+				if name != "" {
+					mcpNames = append(mcpNames, name)
+				}
+			}
+		}
+	}
+	return body, mcpNames
+}
+
+// loadSkills reads skill markdown files and returns concatenated text
+// plus any MCP server names from skill frontmatter.
+func loadSkills(dirs []string, names []string) (string, []string, error) {
 	var sb strings.Builder
+	var allMCP []string
 	for _, name := range names {
 		data, err := findSkill(dirs, name)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
+		body, mcpNames := parseSkillFrontmatter(data)
+		allMCP = append(allMCP, mcpNames...)
 		sb.WriteString("\n\n## Skill: ")
 		sb.WriteString(name)
 		sb.WriteString("\n\n")
-		sb.Write(data)
+		sb.Write(body)
 	}
-	return sb.String(), nil
+	return sb.String(), dedup(allMCP, nil), nil
 }
 
 // Reserved slash-command names that must not be treated as skill shortcuts.

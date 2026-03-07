@@ -239,13 +239,15 @@ func main() {
 		query = shortcutQuery
 	}
 
+	var skillMCPNames []string
 	if len(skillNames) > 0 {
-		skillText, err := loadSkills(skillDirs, skillNames)
+		skillText, smcp, err := loadSkills(skillDirs, skillNames)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skills error: %v\n", err)
 			os.Exit(1)
 		}
 		prompts.SystemPrompt += skillText
+		skillMCPNames = smcp
 	}
 
 	showThinking := !*noThink && !*quiet
@@ -398,9 +400,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Parse /mcp prefix from query and merge with flag names
+	// Parse /mcp prefix from query and merge with flag names + skill frontmatter
 	prefixNames, query := parseMCPPrefix(query)
-	mcpNames := dedup(flagMCPNames, prefixNames)
+	mcpNames := dedup(dedup(flagMCPNames, prefixNames), skillMCPNames)
 	if len(mcpNames) > 0 {
 		if mcpMgr == nil {
 			fmt.Fprintf(os.Stderr, "error: /mcp prefix used but %s not found\n", *mcpConfigPath)

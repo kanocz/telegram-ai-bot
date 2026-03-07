@@ -613,17 +613,29 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		text = shortcutQuery
 	}
 	skillNames = dedup(skillNames, skillsPrefixNames)
+
+	// Parse /mcp prefix (works for all commands: /mcp github /news, /mcp github query, etc.)
+	mcpNames, text := parseMCPPrefix(text)
+
+	// If this is a reply and no skills/MCP were explicitly specified,
+	// inherit them from the conversation chain (so "/eat" context persists).
+	if msg.ReplyToMessage != nil && len(skillNames) == 0 && len(mcpNames) == 0 {
+		chainSkills, chainMCP := findChainContext(msg.Chat.ID, msg.ReplyToMessage.MessageID)
+		skillNames = chainSkills
+		mcpNames = chainMCP
+	}
+
+	var skillMCPNames []string
 	if len(skillNames) > 0 {
-		skillText, skillErr := loadSkills(skillDirs, skillNames)
+		skillText, smcp, skillErr := loadSkills(skillDirs, skillNames)
 		if skillErr != nil {
 			log.Printf("Skills error: %v", skillErr)
 		} else {
 			prompts.SystemPrompt += skillText
+			skillMCPNames = smcp
 		}
 	}
-
-	// Parse /mcp prefix (works for all commands: /mcp github /news, /mcp github query, etc.)
-	mcpNames, text := parseMCPPrefix(text)
+	mcpNames = dedup(mcpNames, skillMCPNames)
 	if len(mcpNames) > 0 {
 		if mcpMgr == nil {
 			_ = sendToChat(token, chatID, "MCP not configured (mcp.json not found)")
@@ -671,7 +683,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		if msg.ReplyToMessage != nil {
 			userReplyToMsgID = msg.ReplyToMessage.MessageID
 		}
-		storeMessage(chatID, msg.MessageID, "user", query, userReplyToMsgID)
+		storeMessage(chatID, msg.MessageID, "user", query, userReplyToMsgID, skillNames, mcpNames)
 
 		// Build conversation chain if this is a reply
 		var history []Message
@@ -720,7 +732,7 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	if sendErr != nil {
 		log.Printf("Error sending response to chat %d: %v", chatID, sendErr)
 	} else if sentMsgID != 0 {
-		storeMessage(chatID, sentMsgID, "assistant", reply, msg.MessageID)
+		storeMessage(chatID, sentMsgID, "assistant", reply, msg.MessageID, skillNames, mcpNames)
 	}
 }
 
@@ -737,6 +749,8 @@ type storedMessage struct {
 	Role         string // "user" or "assistant"
 	Content      string
 	ReplyToMsgID int64
+	SkillNames   []string // skill names active when this message was sent
+	MCPNames     []string // MCP server names active when this message was sent
 }
 
 var botMessages = struct {
@@ -747,7 +761,7 @@ var botMessages = struct {
 const maxStoredPerChat = 1000
 const maxChainDepth = 20
 
-func storeMessage(chatID, messageID int64, role, content string, replyToMsgID int64) {
+func storeMessage(chatID, messageID int64, role, content string, replyToMsgID int64, skillNames, mcpNames []string) {
 	botMessages.Lock()
 	defer botMessages.Unlock()
 	if botMessages.chats[chatID] == nil {
@@ -758,6 +772,8 @@ func storeMessage(chatID, messageID int64, role, content string, replyToMsgID in
 		Role:         role,
 		Content:      content,
 		ReplyToMsgID: replyToMsgID,
+		SkillNames:   skillNames,
+		MCPNames:     mcpNames,
 	}
 	// Evict oldest if too many
 	if len(chat) > maxStoredPerChat {
@@ -769,6 +785,31 @@ func storeMessage(chatID, messageID int64, role, content string, replyToMsgID in
 		}
 		delete(chat, minID)
 	}
+}
+
+// findChainContext walks the reply chain to find the first message
+// that has skill/MCP context (i.e., the message that started the skill session).
+func findChainContext(chatID, replyToMsgID int64) (skillNames, mcpNames []string) {
+	botMessages.RLock()
+	defer botMessages.RUnlock()
+	chat := botMessages.chats[chatID]
+	if chat == nil {
+		return nil, nil
+	}
+	seen := make(map[int64]bool)
+	msgID := replyToMsgID
+	for msgID != 0 && !seen[msgID] && len(seen) < maxChainDepth {
+		seen[msgID] = true
+		stored, ok := chat[msgID]
+		if !ok {
+			break
+		}
+		if len(stored.SkillNames) > 0 || len(stored.MCPNames) > 0 {
+			return stored.SkillNames, stored.MCPNames
+		}
+		msgID = stored.ReplyToMsgID
+	}
+	return nil, nil
 }
 
 func buildConversationChain(chatID, replyToMsgID int64) []Message {
