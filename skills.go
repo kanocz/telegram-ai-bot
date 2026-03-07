@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"ai-webfetch/tools"
 )
 
 // parseSkillsPrefix extracts skill names from a "/skills name1,name2 ..." prefix.
@@ -133,6 +135,21 @@ func loadSkills(dirs []string, names []string) (string, []string, error) {
 	return sb.String(), dedup(allMCP, nil), nil
 }
 
+// parseCommandName extracts a potential command name from "/name rest".
+// Returns (name, rest) or ("", "") if not a slash command.
+func parseCommandName(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "/") {
+		return "", ""
+	}
+	rest := s[1:]
+	sepIdx := strings.IndexAny(rest, " \n")
+	if sepIdx < 0 {
+		return rest, ""
+	}
+	return rest[:sepIdx], strings.TrimSpace(rest[sepIdx+1:])
+}
+
 // Reserved slash-command names that must not be treated as skill shortcuts.
 var reservedCommands = map[string]bool{
 	"think": true, "nothink": true, "mcp": true, "skills": true,
@@ -160,7 +177,7 @@ func parseSkillShortcut(s string, skillDirs []string) (string, string) {
 		query = strings.TrimSpace(rest[sepIdx+1:])
 	}
 
-	if name == "" || reservedCommands[name] {
+	if name == "" || reservedCommands[name] || tools.IsCommand(name) {
 		return "", s
 	}
 

@@ -656,6 +656,46 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		debugOut = os.Stderr
 	}
 
+	// Check for registered commands (e.g. /eat)
+	if cmdName, cmdText := parseCommandName(text); cmdName != "" {
+		if cmd := tools.GetCommand(cmdName); cmd != nil {
+			// Init command's MCP servers
+			if mcpMgr != nil && len(cmd.MCPServers) > 0 {
+				if initErr := mcpMgr.InitServers(cmd.MCPServers); initErr != nil {
+					_ = sendToChat(token, chatID, fmt.Sprintf("MCP error: %v", initErr))
+					return
+				}
+			} else if mcpMgr == nil && len(cmd.MCPServers) > 0 {
+				_ = sendToChat(token, chatID, fmt.Sprintf("Command /%s requires MCP but mcp.json not configured", cmdName))
+				return
+			}
+
+			// Collect image data URIs for the command
+			var cmdImages []string
+			for _, img := range images {
+				cmdImages = append(cmdImages, img.URL)
+			}
+
+			ctx := &tools.CommandContext{Text: cmdText, Images: cmdImages}
+			result, err = cmd.Handler(ctx)
+			if err != nil {
+				log.Printf("Command /%s error: %v", cmdName, err)
+				_ = sendToChat(token, chatID, fmt.Sprintf("Ошибка /%s: %v", cmdName, err))
+				return
+			}
+
+			// Store and send reply
+			storeMessage(chatID, msg.MessageID, "user", text, 0, nil, cmd.MCPServers)
+			sentMsgID, sendErr := sendBotReply(token, chatID, result, msg.MessageID)
+			if sendErr != nil {
+				log.Printf("Error sending command response to chat %d: %v", chatID, sendErr)
+			} else if sentMsgID != 0 {
+				storeMessage(chatID, sentMsgID, "assistant", result, msg.MessageID, nil, cmd.MCPServers)
+			}
+			return
+		}
+	}
+
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
 		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)

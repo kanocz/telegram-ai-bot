@@ -45,6 +45,13 @@ var registry = map[string]*Tool{}
 // Depth tracking and display are handled by the implementation in main.
 var SubAgentFn func(systemPrompt, userMessage string) (string, error)
 
+// SubAgentImageFn is like SubAgentFn but accepts image data URIs for vision tasks.
+var SubAgentImageFn func(systemPrompt, userMessage string, images []string) (string, error)
+
+// MCPCallFn is set by main to allow tools to call MCP server tools directly.
+// qualifiedName is "server__tool", e.g. "nutricalc__catalog_search".
+var MCPCallFn func(qualifiedName string, args json.RawMessage) (string, error)
+
 // SubAgentDepth tracks the current nesting level of sub-agent calls.
 var SubAgentDepth atomic.Int32
 
@@ -138,3 +145,29 @@ func isCalWriteTool(name string) bool {
 func isContactsWriteTool(name string) bool {
 	return name == "contacts_create" || name == "contacts_update" || name == "contacts_delete"
 }
+
+// --- Slash command registration ---
+
+// CommandContext holds the input for a slash command handler.
+type CommandContext struct {
+	Text   string   // remaining text after /command
+	Images []string // base64 data URIs
+}
+
+// Command describes a registered slash command.
+type Command struct {
+	Name       string
+	MCPServers []string
+	Handler    func(ctx *CommandContext) (string, error)
+}
+
+var commands = map[string]*Command{}
+
+// RegisterCommand adds a slash command to the global registry.
+func RegisterCommand(cmd *Command) { commands[cmd.Name] = cmd }
+
+// GetCommand returns a registered command by name, or nil.
+func GetCommand(name string) *Command { return commands[name] }
+
+// IsCommand returns true if a command with this name is registered.
+func IsCommand(name string) bool { return commands[name] != nil }

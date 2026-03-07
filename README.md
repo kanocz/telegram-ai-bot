@@ -350,6 +350,8 @@ How it works:
 
 The bot always sends its responses as replies to your message, so you can naturally continue any conversation by replying to it. Messages are stored in memory (up to 1000 per chat); if the bot restarts, it can still use the text from Telegram's `reply_to_message` as a one-message fallback.
 
+Skill and MCP context is preserved across reply chains: if you start a conversation with a skill shortcut (e.g. `/eat 150g chicken`), subsequent replies in the same thread automatically re-activate the same skill and MCP servers without needing to repeat the prefix.
+
 ### MCP tools
 
 Use external tools from MCP servers (requires `mcp.json`):
@@ -377,6 +379,17 @@ Tool names are prefixed with the server name: `github__list_issues`, `filesystem
 Skills are markdown instruction files that get injected into the system prompt, giving the model additional instructions or context.
 
 A skill can be either a flat file (`name.md`) or a directory with `SKILL.md` inside (`name/SKILL.md`).
+
+Skills support optional YAML frontmatter to auto-enable MCP servers:
+
+```markdown
+---
+mcp: server1,server2
+---
+Skill instructions here...
+```
+
+When a skill with `mcp:` frontmatter is loaded, the listed MCP servers are automatically activated (equivalent to `/mcp server1,server2`). The frontmatter is stripped before injecting the skill text into the system prompt.
 
 Search directories (first match wins):
 

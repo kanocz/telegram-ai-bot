@@ -266,6 +266,13 @@ func main() {
 		mcpMgr.InitEnabled(logf)
 	}
 
+	// Set MCPCallFn for tools that need direct MCP access (e.g. /eat command)
+	if mcpMgr != nil {
+		tools.MCPCallFn = func(name string, args json.RawMessage) (string, error) {
+			return mcpMgr.ExecuteTool(name, args)
+		}
+	}
+
 	// Parse -enable-mcp flag names
 	var flagMCPNames []string
 	if *enableMCP != "" {
@@ -318,6 +325,22 @@ func main() {
 			return result, nil
 		}
 
+		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, think)
+	}
+
+	// SubAgentImageFn: like SubAgentFn but with image support
+	tools.SubAgentImageFn = func(systemPrompt, userMessage string, images []string) (string, error) {
+		tools.SubAgentDepth.Add(1)
+		defer tools.SubAgentDepth.Add(-1)
+
+		var imgURLs []ImageURL
+		for _, uri := range images {
+			imgURLs = append(imgURLs, ImageURL{URL: uri})
+		}
+		msgs := []Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userMessage, Images: imgURLs},
+		}
 		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, think)
 	}
 
@@ -411,6 +434,40 @@ func main() {
 		if err := mcpMgr.InitServers(mcpNames); err != nil {
 			fmt.Fprintf(os.Stderr, "mcp init error: %v\n", err)
 			os.Exit(1)
+		}
+	}
+
+	// Check for registered commands (e.g. /eat)
+	if cmdName, cmdText := parseCommandName(query); cmdName != "" {
+		if cmd := tools.GetCommand(cmdName); cmd != nil {
+			// Init command's MCP servers
+			allMCP := dedup(mcpNames, cmd.MCPServers)
+			if mcpMgr != nil && len(cmd.MCPServers) > 0 {
+				if err := mcpMgr.InitServers(cmd.MCPServers); err != nil {
+					fmt.Fprintf(os.Stderr, "mcp init error: %v\n", err)
+					os.Exit(1)
+				}
+			} else if mcpMgr == nil && len(cmd.MCPServers) > 0 {
+				fmt.Fprintf(os.Stderr, "error: command /%s requires MCP servers %v but mcp.json not found\n", cmdName, cmd.MCPServers)
+				os.Exit(1)
+			}
+			_ = allMCP
+
+			ctx := &tools.CommandContext{Text: cmdText}
+			result, err := cmd.Handler(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "command /%s error: %v\n", cmdName, err)
+				os.Exit(1)
+			}
+			fmt.Fprintln(contentOut, result)
+			if *telegram {
+				chatID := userChatID(user, "other", *telegramChatID)
+				if err := sendToChat(tgCfg.Token, chatID, result); err != nil {
+					fmt.Fprintf(os.Stderr, "telegram error: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			return
 		}
 	}
 
