@@ -288,10 +288,15 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 	// Prepare tools for deep-dive sub-agents (shared across categories)
 	wfsTool, _ := tools.Get("web_fetch_summarize")
 	subAgentDefs := []tools.Definition{wfsTool.Def}
-	var subAgentExec toolExecFunc
+	// Add memory_temp tools so deep-dive sub-agents can cross-reference findings
+	for _, name := range []string{"memory_temp_put", "memory_temp_get"} {
+		if t, ok := tools.Get(name); ok {
+			subAgentDefs = append(subAgentDefs, t.Def)
+		}
+	}
+	subAgentExec := makeToolExec(mcpMgr, mcpNames)
 	if mcpMgr != nil && (len(mcpNames) > 0 || len(mcpOverrides) > 0) {
 		subAgentDefs = append(subAgentDefs, mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)...)
-		subAgentExec = makeToolExec(mcpMgr, mcpNames)
 	}
 
 	var allResults []topicResult
@@ -478,6 +483,8 @@ func runNewsSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 			})
 		}
 	}
+
+	tools.ClearTempMemory()
 
 	if len(allResults) == 0 {
 		return "", fmt.Errorf("no topics extracted from any category")

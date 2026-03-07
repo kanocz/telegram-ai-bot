@@ -98,6 +98,7 @@ func main() {
 	skillsFlag := flag.String("skills", "", "activate skills by name (comma-separated)")
 	skillsDirFlag := flag.String("skills-dir", "", "override skills directory (default: ~/.claude/skills)")
 	noAsk := flag.Bool("no-ask", false, "disable interactive ask_user tool (for cron/scripting)")
+	memoryFlag := flag.String("memory", "", "enable memory tools at this path (\"off\" to disable even if set in users.json)")
 	flag.Parse()
 
 	requestDebug = *requestDebugFlag
@@ -346,6 +347,23 @@ func main() {
 		}
 	}
 
+	// Determine memory path: user config, overridden by -memory flag
+	memoryPath := ""
+	if user != nil && user.Memory != "" {
+		memoryPath = user.Memory
+	}
+	if *memoryFlag != "" {
+		if *memoryFlag == "off" {
+			memoryPath = ""
+		} else {
+			memoryPath = *memoryFlag
+		}
+	}
+	if memoryPath != "" {
+		tools.SetMemoryOverride(memoryPath)
+		defer tools.ClearMemoryOverride()
+	}
+
 	// Save prompt template before language application (for bot per-user language)
 	promptsTemplate := prompts
 
@@ -460,6 +478,10 @@ func main() {
 		prompts.SystemPrompt += AskUserPromptHint
 	}
 
+	if memoryPath != "" {
+		prompts.SystemPrompt += MemoryPromptHint
+	}
+
 	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil, mcpOverrides)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
@@ -562,6 +584,8 @@ func runQuery(cfg modelConfig, modelID string, query string,
 }
 
 func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentOut io.Writer, logf func(string, ...any), prompts *Prompts, sinceHours float64, mcpMgr *MCPManager, mcpNames []string, think thinkMode, mcpOverrides map[string]bool) (string, error) {
+	defer tools.ClearTempMemory()
+
 	progress := func(msg string) {
 		logf("%s%s%s\n", colorDim, msg, colorReset)
 	}
@@ -592,6 +616,10 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 		progress(fmt.Sprintf("  [%d/%d] %s...", i+1, len(groups), label))
 
 		input := buildGroupDigestInput(g)
+		// Inject persistent memory context about the sender
+		if memCtx := tools.MemoryLookup(g.SenderAddr); memCtx != "" {
+			input += "\n\n=== MEMORY ===\n" + memCtx
+		}
 		digest, err := tools.SubAgentFn(prompts.MailDigestSubAgent, input)
 		if err != nil {
 			progress(fmt.Sprintf("    ошибка: %v", err))
@@ -626,12 +654,11 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 		{Role: "user", Content: finalInput},
 	}
 
-	// Merge MCP tools for final synthesis (custom prompts may reference them)
-	var toolDefs []tools.Definition
-	var execTool toolExecFunc
+	// Merge built-in + MCP tools for final synthesis
+	toolDefs := tools.All()
+	execTool := makeToolExec(mcpMgr, mcpNames)
 	if mcpMgr != nil && (len(mcpNames) > 0 || len(mcpOverrides) > 0) {
-		toolDefs = mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)
-		execTool = makeToolExec(mcpMgr, mcpNames)
+		toolDefs = append(toolDefs, mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)...)
 	}
 
 	for {
@@ -653,16 +680,12 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 
 		for _, tc := range result.ToolCalls {
 			logf("%s[tool: %s]%s\n", colorCyan, tc.Function.Name, colorReset)
+			res, execErr := execTool(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			var toolResult string
-			if execTool != nil {
-				res, execErr := execTool(tc.Function.Name, json.RawMessage(tc.Function.Arguments))
-				if execErr != nil {
-					toolResult = "error: " + execErr.Error()
-				} else {
-					toolResult = res
-				}
+			if execErr != nil {
+				toolResult = "error: " + execErr.Error()
 			} else {
-				toolResult = fmt.Sprintf("error: unknown tool %q", tc.Function.Name)
+				toolResult = res
 			}
 			messages = append(messages, Message{
 				Role:       "tool",

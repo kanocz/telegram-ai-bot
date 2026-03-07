@@ -1,6 +1,6 @@
 # ai-webfetch
 
-Telegram bot and CLI tool: AI assistant with web, email (IMAP), Home Assistant, calendar (CalDAV/iCal), and contacts (CardDAV) access.
+Telegram bot and CLI tool: AI assistant with web, email (IMAP), Home Assistant, calendar (CalDAV/iCal), contacts (CardDAV), and persistent memory access.
 
 ## Configuration
 
@@ -47,7 +47,8 @@ New format (with language):
     "mcp": {
       "context7": true,
       "github": false
-    }
+    },
+    "memory": "/home/alice/.ai-memory"
   }
 }
 ```
@@ -61,6 +62,7 @@ New format (with language):
 - `calendar` = CalDAV/iCal settings (optional; if missing, calendar tools are hidden). Can have `server` (CalDAV), `ical_urls` (subscriptions), or both. `writable: true` enables create/update/delete. A user can have only `ical_urls` without a CalDAV server for read-only calendar access.
 - `contacts` = CardDAV settings (optional; if missing, contacts tools are hidden). `writable: true` enables create/update/delete.
 - `mcp` = per-user MCP server overrides (optional; `true` enables, `false` disables)
+- `memory` = path to persistent memory directory (optional; if missing, memory tools are hidden). Overridden by `-memory` flag, disabled by `-memory off`
 - CLI: if only one user exists, it is auto-selected without `-user`
 
 ### homeassistant.json — Home Assistant
@@ -153,6 +155,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-git` — enable git history tools (`git_log`, `git_show`, `git_diff`); repo = `-filesystem` dir or cwd
 - `-git-dir path` — enable git history tools on a specific repo (implies `-git`)
 - `-no-ask` — disable the `ask_user` tool (for cron/scripting; the tool is also hidden in `-quiet`, `-telegram`, `-mail-summary`, and `-news-summary` modes)
+- `-memory path` — enable persistent memory tools at this directory; overrides `memory` from `users.json`. Use `-memory off` to disable memory even if configured in user settings
 - `-export-default-prompts dir` — export default prompts to a directory and exit
 - `-prompts-dir dir` — load prompts from directory (missing files fall back to built-in defaults)
 
@@ -193,6 +196,10 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 | `git_show` | Show commit details (requires `-git`) |
 | `git_diff` | Diff between commits/refs (requires `-git`) |
 | `ask_user` | Ask user a question with optional choices (interactive CLI and Telegram bot) |
+| `memory_store` | Store/update an entity (contact, topic, preference) or log a timestamped episode (requires `-memory` or `memory` in users.json) |
+| `memory_search` | Search memories by text, type, or tags (requires `-memory`) |
+| `memory_recall` | Full details of an entity: facts, relations, linked episodes (requires `-memory`) |
+| `memory_forget` | Delete an entity (with linked episodes) or a specific episode (requires `-memory`) |
 
 ## Prompt customization
 
@@ -512,6 +519,27 @@ When the AI needs clarification, it can ask questions with options. In CLI mode,
 ```
 
 The tool is automatically hidden in `-quiet`, `-telegram` (one-shot send), `-mail-summary`, and `-news-summary` modes. In Telegram bot mode, it is always available — questions appear as inline keyboard buttons, and the bot waits for the user to press one (no timeout).
+
+### Persistent memory
+
+The assistant can remember facts, contacts, topics, and events across conversations. Memory is stored as a JSON file (`memory.json`) in the specified directory.
+
+Two types of records:
+- **Entities** — persistent facts with an ID, e.g. `contact:user@example.com`, `topic:ai-regulation`, `pref:language`. Facts are merged on update.
+- **Episodes** — timestamped events linked to entities, e.g. "discussed project deadline", "analyzed article about AI regulation".
+
+```bash
+# Enable via CLI flag
+./ai-webfetch -memory ~/.ai-memory "What do you remember about Ivan?"
+
+# Configured in users.json — no flag needed
+./ai-webfetch -user alice "Remember that I prefer concise answers"
+
+# Disable for a single invocation despite users.json config
+./ai-webfetch -memory off -user alice "query without memory"
+```
+
+Priority: `-memory` flag > `memory` in `users.json` > disabled. In Telegram bot mode, memory path comes from user config.
 
 ### Debugging sub-agents
 

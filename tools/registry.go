@@ -96,6 +96,7 @@ func All() []Definition {
 	hideContacts := !ContactsAvailable()
 	hideContactsWrite := hideContacts || !ContactsWritable()
 	hideAsk := !AskAvailable()
+	hideMemory := !MemoryAvailable()
 
 	defs := make([]Definition, 0, len(registry))
 	for _, t := range registry {
@@ -120,6 +121,9 @@ func All() []Definition {
 			continue
 		}
 		if hideAsk && name == "ask_user" {
+			continue
+		}
+		if hideMemory && strings.HasPrefix(name, "memory_") {
 			continue
 		}
 		defs = append(defs, t.Def)

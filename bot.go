@@ -512,6 +512,11 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			tools.SetContactsOverride(contactsCfg)
 			defer tools.ClearContactsOverride()
 		}
+		if user.Memory != "" {
+			tools.SetMemoryOverride(user.Memory)
+			defer tools.ClearMemoryOverride()
+			defer tools.ClearTempMemory()
+		}
 	}
 
 	// Enable ask_user tool for Telegram sessions
@@ -526,6 +531,9 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	prompts := *promptsTemplate // copy template
 	applyLanguage(&prompts, lang)
 	prompts.SystemPrompt += AskUserPromptHint
+	if user != nil && user.Memory != "" {
+		prompts.SystemPrompt += MemoryPromptHint
+	}
 
 	// Compute MCP overrides from user config
 	var mcpOverrides map[string]bool

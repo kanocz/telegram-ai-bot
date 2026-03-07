@@ -33,7 +33,8 @@
     "mcp": {
       "context7": true,
       "github": false
-    }
+    },
+    "memory": "/home/alice/.ai-memory"
   },
   "bob": {
     "telegram_id": 987654321,
