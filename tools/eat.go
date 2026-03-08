@@ -222,11 +222,33 @@ func processEatItem(item eatItem, username, date string) (string, error) {
 		return "", fmt.Errorf("'%s' не найден в каталоге", item.Name)
 	}
 
+	// If no weight specified, ask user to pick a serving or enter weight
+	if item.Weight == 0 && len(match.Servings) > 0 && AskAvailable() {
+		chosen, qty, askErr := askServingOrWeight(match)
+		if askErr != nil {
+			return "", askErr
+		}
+		if chosen != nil {
+			// User picked a serving — use it directly
+			serving := *chosen
+			quantity := qty
+			actualMacros := macros{
+				Calories: math.Round(serving.Macros.Calories*quantity*10) / 10,
+				Protein:  math.Round(serving.Macros.Protein*quantity*10) / 10,
+				Carbs:    math.Round(serving.Macros.Carbs*quantity*10) / 10,
+				Fats:     math.Round(serving.Macros.Fats*quantity*10) / 10,
+			}
+			return addAndReport(match, item.Name, serving, quantity, actualMacros, username, date)
+		}
+		// qty holds the weight in grams the user typed — update item
+		item.Weight = qty
+		item.Unit = "г"
+	}
+
 	// Find best serving and calculate quantity
 	serving := bestServing(match.Servings, item.Unit)
 	quantity := calculateQuantity(item, serving)
 
-	// Calculate actual macros
 	actualMacros := macros{
 		Calories: math.Round(serving.Macros.Calories*quantity*10) / 10,
 		Protein:  math.Round(serving.Macros.Protein*quantity*10) / 10,
@@ -234,36 +256,89 @@ func processEatItem(item eatItem, username, date string) (string, error) {
 		Fats:     math.Round(serving.Macros.Fats*quantity*10) / 10,
 	}
 
-	// Build diary_add_meal args
+	return addAndReport(match, item.Name, serving, quantity, actualMacros, username, date)
+}
+
+// addAndReport calls diary_add_meal and returns a formatted confirmation line.
+func addAndReport(match *catalogItem, label string, serving catalogServing, quantity float64, m macros, username, date string) (string, error) {
 	mealArgs := map[string]any{
 		"user":       username,
 		"date":       date,
-		"label":      item.Name,
-		"calories":   actualMacros.Calories,
-		"protein":    actualMacros.Protein,
-		"carbs":      actualMacros.Carbs,
-		"fats":       actualMacros.Fats,
+		"label":      label,
+		"calories":   m.Calories,
+		"protein":    m.Protein,
+		"carbs":      m.Carbs,
+		"fats":       m.Fats,
 		"item_id":    match.ID,
 		"serving_id": serving.ID,
 		"quantity":   math.Round(quantity*1000) / 1000,
 	}
 
-	_, err = mcpCall("nutricalc__diary_add_meal", mealArgs)
+	_, err := mcpCall("nutricalc__diary_add_meal", mealArgs)
 	if err != nil {
 		return "", fmt.Errorf("diary_add_meal: %w", err)
 	}
 
+	// Format weight/qty for display
 	weightStr := ""
-	if item.Weight > 0 {
-		if item.Unit == "шт" || item.Unit == "pcs" {
-			weightStr = fmt.Sprintf(" %.0f%s", item.Weight, item.Unit)
-		} else {
-			weightStr = fmt.Sprintf(" %.0fг", item.Weight)
+	if quantity != 1 || serving.Quantity > 0 {
+		grams := quantity * serving.Quantity
+		if grams > 0 {
+			weightStr = fmt.Sprintf(" %.0fг", grams)
 		}
 	}
 
 	return fmt.Sprintf("+ %s%s (%.0f ккал, %.1fб, %.1fу, %.1fж)",
-		match.Name, weightStr, actualMacros.Calories, actualMacros.Protein, actualMacros.Carbs, actualMacros.Fats), nil
+		match.Name, weightStr, m.Calories, m.Protein, m.Carbs, m.Fats), nil
+}
+
+// askServingOrWeight presents available servings as buttons plus "Указать вес".
+// Returns (serving, quantity, err). If serving is nil, quantity holds the weight in grams.
+func askServingOrWeight(match *catalogItem) (*catalogServing, float64, error) {
+	var options []UserOption
+	for _, s := range match.Servings {
+		label := s.Label
+		if s.Macros.Calories > 0 {
+			label += fmt.Sprintf(" (%.0f ккал)", s.Macros.Calories)
+		}
+		options = append(options, UserOption{Label: label})
+	}
+	options = append(options, UserOption{Label: "Указать вес"})
+
+	answer, err := GetPrompter().Ask(UserQuestion{
+		Question: fmt.Sprintf("%s — сколько?", match.Name),
+		Options:  options,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if answer == "Указать вес" {
+		weightAnswer, err := GetPrompter().Ask(UserQuestion{
+			Question: "Введите вес в граммах:",
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		var w float64
+		weightAnswer = strings.Replace(weightAnswer, ",", ".", 1)
+		// Strip "User answered: " prefix if present
+		weightAnswer = strings.TrimPrefix(weightAnswer, "User answered: ")
+		fmt.Sscanf(strings.TrimSpace(weightAnswer), "%f", &w)
+		if w <= 0 {
+			w = 100
+		}
+		return nil, w, nil
+	}
+
+	// Match answer to a serving
+	for i, opt := range options {
+		if i < len(match.Servings) && opt.Label == answer {
+			return &match.Servings[i], 1, nil
+		}
+	}
+	// Fallback: first serving
+	return &match.Servings[0], 1, nil
 }
 
 // --- Catalog search cascade ---
