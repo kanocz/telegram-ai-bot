@@ -324,6 +324,19 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 		}
 	}
 
+	// Fallback: if no tool calls and content is empty (or entirely within
+	// <think> tags), the model likely put its response in reasoning_content.
+	// Use reasoning as content; if that's also empty, extract <think> inner text.
+	if len(result.ToolCalls) == 0 && strings.TrimSpace(stripThinkTags(result.Content)) == "" {
+		if s := strings.TrimSpace(reasoningBuf.String()); s != "" {
+			result.Content = s
+			fmt.Fprint(contentOut, s)
+		} else if inner := extractThinkInner(result.Content); inner != "" {
+			result.Content = inner
+			fmt.Fprint(contentOut, inner)
+		}
+	}
+
 	return &result, nil
 }
 
@@ -512,6 +525,10 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 			if imgURIs := tools.TakePendingImages(); len(imgURIs) > 0 {
 				for _, uri := range imgURIs {
 					toolImages = append(toolImages, ImageURL{URL: uri})
+					imgID := tools.AddSessionImage(uri)
+					if tools.ImageSenderAvailable() {
+						toolResult += fmt.Sprintf("\n[Image #%d — use send_image to forward to the user]", imgID)
+					}
 				}
 			}
 
@@ -588,6 +605,26 @@ var reThinkTags = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
 
 func stripThinkTags(s string) string {
 	return strings.TrimSpace(reThinkTags.ReplaceAllString(s, ""))
+}
+
+// reThinkInner captures content inside <think> tags.
+var reThinkInner = regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+
+// extractThinkInner returns text from inside <think> blocks.
+// Used as a last-resort fallback when the model wraps its entire
+// response in <think> tags (leaving no "content" text).
+func extractThinkInner(s string) string {
+	matches := reThinkInner.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, m := range matches {
+		if t := strings.TrimSpace(m[1]); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // reToolCallBlock extracts <tool_call>...</tool_call> blocks from text.

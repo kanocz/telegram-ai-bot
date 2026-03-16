@@ -111,6 +111,11 @@ func handleEatStats(username, date string) (string, error) {
 // --- Text mode ---
 
 func handleEatText(text, username, date string) (string, error) {
+	// Check if this is a catalog-add with inline macros
+	if ca := parseCatalogAdd(text); ca != nil {
+		return handleCatalogAdd(ca, username, date)
+	}
+
 	items := parseEatItems(text)
 	if len(items) == 0 {
 		return "", fmt.Errorf("не удалось распознать продукты в: %s", text)
@@ -137,17 +142,40 @@ func handleEatText(text, username, date string) (string, error) {
 
 // --- Image mode ---
 
+// imageAnalysisResult is the structured response from vision AI.
+type imageAnalysisResult struct {
+	Type    string                  `json:"type"` // "food" or "label"
+	Items   []imageAnalysisFoodItem `json:"items,omitempty"`
+	Name    string                  `json:"name,omitempty"`
+	Per100g macros                  `json:"per_100g,omitempty"`
+}
+
+type imageAnalysisFoodItem struct {
+	Name    string  `json:"name"`
+	WeightG float64 `json:"weight_g"`
+}
+
 func handleEatImage(ctx *CommandContext, username, date string) (string, error) {
 	if SubAgentImageFn == nil {
 		return "", fmt.Errorf("image analysis not available")
 	}
 
-	systemPrompt := `You extract food items from images. Return a JSON array of objects:
-[{"name": "food name", "weight_g": 100, "calories": 250, "protein": 20, "carbs": 30, "fats": 10}]
-If it's a nutrition label, extract per-100g values. Use Russian names when possible.
-Return ONLY the JSON array, no other text.`
+	// Call AI with image only — caption text is parsed by Go code, not sent to AI.
+	systemPrompt := `You analyze food images. Classify the image:
+1. "label" — nutrition label, food package with nutrition facts
+2. "food" — photo of prepared food, dish, meal, raw ingredients
 
-	resp, err := SubAgentImageFn(systemPrompt, "Extract food items from this image as JSON array.", ctx.Images)
+For type "label": extract product name (if visible) and nutritional values per 100g.
+Return: {"type": "label", "name": "product name", "per_100g": {"calories": N, "protein": N, "carbs": N, "fats": N}}
+
+For type "food": identify each food item and estimate weight in grams.
+Return: {"type": "food", "items": [{"name": "food name", "weight_g": N}]}
+
+Rules: use Russian names when possible. For labels: ALWAYS normalize to per 100g.
+For food: estimate realistic portion weights. Return ONLY JSON.`
+
+	thinkOn := true
+	resp, err := SubAgentImageFn(systemPrompt, "Analyze this image.", ctx.Images, &thinkOn)
 	if err != nil {
 		return "", fmt.Errorf("image analysis: %w", err)
 	}
@@ -157,20 +185,23 @@ Return ONLY the JSON array, no other text.`
 		return "", fmt.Errorf("parse image response: %w", err)
 	}
 
-	var extracted []struct {
-		Name     string  `json:"name"`
-		WeightG  float64 `json:"weight_g"`
-		Calories float64 `json:"calories"`
-		Protein  float64 `json:"protein"`
-		Carbs    float64 `json:"carbs"`
-		Fats     float64 `json:"fats"`
-	}
-	if err := json.Unmarshal(raw, &extracted); err != nil {
-		return "", fmt.Errorf("parse extracted items: %w", err)
+	var analysis imageAnalysisResult
+	if err := json.Unmarshal(raw, &analysis); err != nil {
+		return "", fmt.Errorf("parse analysis: %w", err)
 	}
 
+	switch analysis.Type {
+	case "label":
+		return handleEatLabel(analysis, ctx.Text, username, date)
+	default:
+		return handleEatFood(analysis.Items, username, date)
+	}
+}
+
+// handleEatFood processes a food photo: each recognized item goes through the normal catalog search flow.
+func handleEatFood(items []imageAnalysisFoodItem, username, date string) (string, error) {
 	var results []string
-	for _, ex := range extracted {
+	for _, ex := range items {
 		item := eatItem{Name: ex.Name, Weight: ex.WeightG, Unit: "г"}
 		if item.Weight == 0 {
 			item.Weight = 100
@@ -187,8 +218,200 @@ Return ONLY the JSON array, no other text.`
 	if err != nil {
 		stats = fmt.Sprintf("(ошибка статистики: %v)", err)
 	}
-
 	return strings.Join(results, "\n") + "\n\n" + stats, nil
+}
+
+// handleEatLabel processes a nutrition label photo.
+// Caption text is parsed for product name and/or weight — it is NOT sent to the AI.
+func handleEatLabel(analysis imageAnalysisResult, captionText string, username, date string) (string, error) {
+	per100g := analysis.Per100g
+	labelName := analysis.Name
+
+	// Parse caption for name and/or weight.
+	caption := strings.TrimSpace(captionText)
+	var itemName string
+	var weight float64
+	var weightUnit string
+
+	if caption != "" {
+		parsed := parseOneItem(caption)
+		itemName = parsed.Name
+		weight = parsed.Weight
+		weightUnit = parsed.Unit
+	}
+
+	// Determine final product name: caption name > label name > ask user.
+	finalName := itemName
+	if finalName == "" {
+		finalName = labelName
+	}
+	if finalName == "" && AskAvailable() {
+		answer, err := GetPrompter().Ask(UserQuestion{
+			Question: "Название продукта не распознано. Введите название:",
+		})
+		if err != nil {
+			return "", err
+		}
+		finalName = strings.TrimSpace(strings.TrimPrefix(answer, "User answered: "))
+	}
+	if finalName == "" {
+		return "", fmt.Errorf("не удалось определить название продукта")
+	}
+
+	if weightUnit == "" && weight > 0 {
+		weightUnit = "г"
+	}
+
+	if weight > 0 {
+		return handleLabelWithWeight(finalName, per100g, weight, weightUnit, username, date)
+	}
+	return handleLabelNoWeight(finalName, per100g, username, date)
+}
+
+// handleLabelWithWeight handles a label photo when caption includes weight (e.g. "творог 20г").
+func handleLabelWithWeight(name string, per100g macros, weight float64, weightUnit string, username, date string) (string, error) {
+	ratio := weight / 100
+	diaryMacros := macros{
+		Calories: math.Round(per100g.Calories * ratio * 10) / 10,
+		Protein:  math.Round(per100g.Protein * ratio * 10) / 10,
+		Carbs:    math.Round(per100g.Carbs * ratio * 10) / 10,
+		Fats:     math.Round(per100g.Fats * ratio * 10) / 10,
+	}
+
+	if !AskAvailable() {
+		return "", fmt.Errorf("need interactive mode for label processing")
+	}
+
+	answer, err := GetPrompter().Ask(UserQuestion{
+		Question: fmt.Sprintf("%s %.0f%s (%.0f ккал)\nна 100г: %.0f ккал, %.1fб, %.1fу, %.1fж",
+			name, weight, weightUnit, diaryMacros.Calories,
+			per100g.Calories, per100g.Protein, per100g.Carbs, per100g.Fats),
+		Options: []UserOption{
+			{Label: "Каталог + дневник"},
+			{Label: "Только дневник"},
+			{Label: "Только каталог"},
+			{Label: "Отмена"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if answer == "Отмена" {
+		return "Отменено", nil
+	}
+
+	var parts []string
+
+	if answer != "Только дневник" {
+		if err := catalogAddProduct(name, per100g, "AI", "100g", 100, "г"); err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("+ В каталог: %s (%.0f ккал/100г)", name, per100g.Calories))
+	}
+
+	if answer != "Только каталог" {
+		mealArgs := map[string]any{
+			"user":      username,
+			"date":      date,
+			"label":     name,
+			"calories":  diaryMacros.Calories,
+			"protein":   diaryMacros.Protein,
+			"carbs":     diaryMacros.Carbs,
+			"fats":      diaryMacros.Fats,
+			"is_custom": true,
+		}
+		_, err := mcpCall("nutricalc__diary_add_meal", mealArgs)
+		if err != nil {
+			return "", fmt.Errorf("diary_add_meal: %w", err)
+		}
+		parts = append(parts, fmt.Sprintf("+ В дневник: %s %.0f%s (%.0f ккал, %.1fб, %.1fу, %.1fж)",
+			name, weight, weightUnit, diaryMacros.Calories, diaryMacros.Protein, diaryMacros.Carbs, diaryMacros.Fats))
+
+		stats, err := fetchAndFormatDayStats(username, date)
+		if err == nil {
+			parts = append(parts, "\n"+stats)
+		}
+	}
+
+	return strings.Join(parts, "\n"), nil
+}
+
+// handleLabelNoWeight handles a label photo when no weight is specified in caption.
+func handleLabelNoWeight(name string, per100g macros, username, date string) (string, error) {
+	if !AskAvailable() {
+		return fmt.Sprintf("Этикетка: %s\n%.0f ккал, %.1fб, %.1fу, %.1fж на 100г",
+			name, per100g.Calories, per100g.Protein, per100g.Carbs, per100g.Fats), nil
+	}
+
+	answer, err := GetPrompter().Ask(UserQuestion{
+		Question: fmt.Sprintf("%s — на 100г:\n%.0f ккал, %.1fб, %.1fу, %.1fж",
+			name, per100g.Calories, per100g.Protein, per100g.Carbs, per100g.Fats),
+		Options: []UserOption{
+			{Label: "В каталог"},
+			{Label: "В каталог + дневник"},
+			{Label: "Отмена"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if answer == "Отмена" {
+		return "Отменено", nil
+	}
+
+	if err := catalogAddProduct(name, per100g, "AI", "100g", 100, "г"); err != nil {
+		return "", err
+	}
+
+	parts := []string{fmt.Sprintf("+ В каталог: %s (%.0f ккал/100г)", name, per100g.Calories)}
+
+	if answer == "В каталог + дневник" {
+		weightAnswer, err := GetPrompter().Ask(UserQuestion{
+			Question: "Введите вес в граммах:",
+		})
+		if err != nil {
+			return strings.Join(parts, "\n"), nil
+		}
+		weightAnswer = strings.Replace(weightAnswer, ",", ".", 1)
+		weightAnswer = strings.TrimPrefix(weightAnswer, "User answered: ")
+		var w float64
+		fmt.Sscanf(strings.TrimSpace(weightAnswer), "%f", &w)
+		if w <= 0 {
+			w = 100
+		}
+
+		ratio := w / 100
+		diaryMacros := macros{
+			Calories: math.Round(per100g.Calories * ratio * 10) / 10,
+			Protein:  math.Round(per100g.Protein * ratio * 10) / 10,
+			Carbs:    math.Round(per100g.Carbs * ratio * 10) / 10,
+			Fats:     math.Round(per100g.Fats * ratio * 10) / 10,
+		}
+
+		mealArgs := map[string]any{
+			"user":      username,
+			"date":      date,
+			"label":     name,
+			"calories":  diaryMacros.Calories,
+			"protein":   diaryMacros.Protein,
+			"carbs":     diaryMacros.Carbs,
+			"fats":      diaryMacros.Fats,
+			"is_custom": true,
+		}
+		_, err = mcpCall("nutricalc__diary_add_meal", mealArgs)
+		if err != nil {
+			return "", fmt.Errorf("diary_add_meal: %w", err)
+		}
+		parts = append(parts, fmt.Sprintf("+ В дневник: %s %.0fг (%.0f ккал, %.1fб, %.1fу, %.1fж)",
+			name, w, diaryMacros.Calories, diaryMacros.Protein, diaryMacros.Carbs, diaryMacros.Fats))
+
+		stats, err := fetchAndFormatDayStats(username, date)
+		if err == nil {
+			parts = append(parts, "\n"+stats)
+		}
+	}
+
+	return strings.Join(parts, "\n"), nil
 }
 
 // --- Process a single eat item ---
@@ -663,58 +886,281 @@ func calculateQuantity(item eatItem, serving catalogServing) float64 {
 // --- Add to catalog (AI-estimated macros) ---
 
 func handleAddToCatalog(item eatItem, username, date string) (string, error) {
-	// Ask user for macros or use AI estimate
-	var cal, prot, carb, fat float64
-
-	if SubAgentFn != nil {
-		estimate, err := SubAgentFn(
-			"You are a nutrition expert. Estimate macros per 100g for the given food. Return ONLY JSON: {\"calories\":N,\"protein\":N,\"carbs\":N,\"fats\":N}",
-			fmt.Sprintf("Estimate macros per 100g for: %s", item.Name),
-		)
-		if err == nil {
-			raw, _ := extractJSON(estimate)
-			var m macros
-			if json.Unmarshal(raw, &m) == nil {
-				cal, prot, carb, fat = m.Calories, m.Protein, m.Carbs, m.Fats
-			}
-		}
-	}
-
-	if cal == 0 {
-		// Fallback: ask user
-		if !AskAvailable() {
-			return "", fmt.Errorf("cannot estimate macros for '%s'", item.Name)
-		}
-		answer, err := GetPrompter().Ask(UserQuestion{
-			Question: fmt.Sprintf("Введите КБЖУ на 100г для '%s' (через пробел: калории белки углеводы жиры):", item.Name),
-		})
-		if err != nil {
-			return "", err
-		}
-		parts := strings.Fields(answer)
-		if len(parts) >= 4 {
-			fmt.Sscanf(parts[0], "%f", &cal)
-			fmt.Sscanf(parts[1], "%f", &prot)
-			fmt.Sscanf(parts[2], "%f", &carb)
-			fmt.Sscanf(parts[3], "%f", &fat)
-		}
-	}
-
-	// Add to catalog
-	addArgs := map[string]any{
-		"name":     item.Name,
-		"calories": cal,
-		"protein":  prot,
-		"carbs":    carb,
-		"fats":     fat,
-	}
-	_, err := mcpCall("nutricalc__catalog_add_product", addArgs)
+	m, err := estimateMacrosWithConfirm(item.Name)
 	if err != nil {
-		return "", fmt.Errorf("catalog_add_product: %w", err)
+		return "", err
+	}
+
+	// Add to catalog (macros are per 100g)
+	if err := catalogAddProduct(item.Name, m, "AI", "100g", 100, "г"); err != nil {
+		return "", err
 	}
 
 	// Now search for the newly added item and log it
 	return processEatItem(item, username, date)
+}
+
+// handleCatalogAdd processes a multi-line catalog-add input.
+// If weight is specified, asks whether macros are per-serving or per-100g,
+// then offers to add to catalog, diary, or both.
+func handleCatalogAdd(ca *catalogAddInput, username, date string) (string, error) {
+	m := ca.Macros
+
+	if ca.Weight > 0 {
+		// Macros + weight: ask if values are for this weight or per 100g
+		if !AskAvailable() {
+			return "", fmt.Errorf("need to clarify: macros per %.0f%s or per 100г", ca.Weight, ca.WeightUnit)
+		}
+
+		answer, err := GetPrompter().Ask(UserQuestion{
+			Question: fmt.Sprintf("%s — КБЖУ (%.0f/%.1f/%.1f/%.1f) это на:",
+				ca.Name, m.Calories, m.Protein, m.Carbs, m.Fats),
+			Options: []UserOption{
+				{Label: fmt.Sprintf("%.0f%s (порцию)", ca.Weight, ca.WeightUnit)},
+				{Label: "100г"},
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+
+		perServing := answer != "100г"
+
+		var catalogMacros macros // per 100g for catalog
+		var diaryMacros macros  // actual for this weight
+		var servingLabel string
+
+		if perServing {
+			// User says macros are for ca.Weight grams (a serving)
+			// Catalog: store as "шт" serving with these exact macros
+			catalogMacros = m
+			diaryMacros = m
+			servingLabel = "шт"
+		} else {
+			// User says macros are per 100g
+			catalogMacros = m
+			ratio := ca.Weight / 100
+			diaryMacros = macros{
+				Calories: math.Round(m.Calories*ratio*10) / 10,
+				Protein:  math.Round(m.Protein*ratio*10) / 10,
+				Carbs:    math.Round(m.Carbs*ratio*10) / 10,
+				Fats:     math.Round(m.Fats*ratio*10) / 10,
+			}
+		}
+
+		// Ask: catalog + diary, or just diary?
+		action, err := GetPrompter().Ask(UserQuestion{
+			Question: fmt.Sprintf("%s %.0f%s (%.0f ккал) — куда?",
+				ca.Name, ca.Weight, ca.WeightUnit, diaryMacros.Calories),
+			Options: []UserOption{
+				{Label: "Каталог + дневник"},
+				{Label: "Только дневник"},
+				{Label: "Только каталог"},
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+
+		var parts []string
+
+		if action != "Только дневник" {
+			sLabel := servingLabel
+			sQty := float64(1)
+			sUnit := "шт"
+			if sLabel == "" {
+				sLabel = "100g"
+				sQty = 100
+				sUnit = "г"
+			}
+			if err := catalogAddProduct(ca.Name, catalogMacros, "AI", sLabel, sQty, sUnit); err != nil {
+				return "", err
+			}
+			parts = append(parts, fmt.Sprintf("+ В каталог: %s (%.0f ккал/%s)", ca.Name, catalogMacros.Calories, sLabel))
+		}
+
+		if action != "Только каталог" {
+			mealArgs := map[string]any{
+				"user":      username,
+				"date":      date,
+				"label":     ca.Name,
+				"calories":  diaryMacros.Calories,
+				"protein":   diaryMacros.Protein,
+				"carbs":     diaryMacros.Carbs,
+				"fats":      diaryMacros.Fats,
+				"is_custom": true,
+			}
+			_, err := mcpCall("nutricalc__diary_add_meal", mealArgs)
+			if err != nil {
+				return "", fmt.Errorf("diary_add_meal: %w", err)
+			}
+			parts = append(parts, fmt.Sprintf("+ В дневник: %s %.0f%s (%.0f ккал, %.1fб, %.1fу, %.1fж)",
+				ca.Name, ca.Weight, ca.WeightUnit, diaryMacros.Calories, diaryMacros.Protein, diaryMacros.Carbs, diaryMacros.Fats))
+
+			stats, err := fetchAndFormatDayStats(username, date)
+			if err == nil {
+				parts = append(parts, "\n"+stats)
+			}
+		}
+
+		return strings.Join(parts, "\n"), nil
+	}
+
+	// No weight — just add to catalog (macros are per 100g)
+	if err := catalogAddProduct(ca.Name, m, "AI", "100g", 100, "г"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("+ В каталог: %s (%.0f ккал, %.1fб, %.1fу, %.1fж)",
+		ca.Name, m.Calories, m.Protein, m.Carbs, m.Fats), nil
+}
+
+// estimateMacrosWithConfirm uses AI to estimate macros and asks user to confirm.
+func estimateMacrosWithConfirm(name string) (macros, error) {
+	if SubAgentFn == nil {
+		return macros{}, fmt.Errorf("AI estimation not available for '%s'", name)
+	}
+
+	estimate, err := SubAgentFn(
+		"You are a nutrition expert. Estimate macros per 100g for the given food. Return ONLY JSON: {\"calories\":N,\"protein\":N,\"carbs\":N,\"fats\":N}",
+		fmt.Sprintf("Estimate macros per 100g for: %s", name),
+	)
+	if err != nil {
+		return macros{}, fmt.Errorf("AI estimate failed: %w", err)
+	}
+
+	raw, err := extractJSON(estimate)
+	if err != nil {
+		return macros{}, fmt.Errorf("parse AI estimate: %w", err)
+	}
+	var m macros
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return macros{}, fmt.Errorf("parse AI macros: %w", err)
+	}
+
+	if !AskAvailable() {
+		return m, nil
+	}
+
+	answer, err := GetPrompter().Ask(UserQuestion{
+		Question: fmt.Sprintf("%s — на 100г:\n%.0f ккал, %.1fб, %.1fу, %.1fж\nДобавить?",
+			name, m.Calories, m.Protein, m.Carbs, m.Fats),
+		Options: []UserOption{
+			{Label: "Да"},
+			{Label: "Нет"},
+		},
+	})
+	if err != nil {
+		return macros{}, err
+	}
+	if answer != "Да" {
+		return macros{}, fmt.Errorf("отменено")
+	}
+	return m, nil
+}
+
+// --- Catalog-add macro parsing ---
+
+// catalogAddInput is the parsed result of a multi-line catalog-add message.
+type catalogAddInput struct {
+	Name      string
+	Macros    macros
+	HasMacros bool
+	Weight    float64 // trailing weight in grams, 0 if absent
+	WeightUnit string  // "г", "мл", etc.
+}
+
+// parseCatalogAdd detects multi-line input with inline macros and optional trailing weight.
+// Returns nil if the text doesn't look like a catalog-add.
+func parseCatalogAdd(text string) *catalogAddInput {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+
+	var nameLines []string
+	var m macros
+	foundMacro := false
+	var weight float64
+	var weightUnit string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if key, val, ok := parseMacroLine(line); ok {
+			foundMacro = true
+			switch key {
+			case "cal":
+				m.Calories = val
+			case "pro":
+				m.Protein = val
+			case "carb":
+				m.Carbs = val
+			case "fat":
+				m.Fats = val
+			}
+		} else if w, u, ok := parseWeightLine(line); ok {
+			weight = w
+			weightUnit = u
+		} else {
+			nameLines = append(nameLines, line)
+		}
+	}
+
+	name := strings.Join(nameLines, " ")
+	if name == "" || !foundMacro {
+		return nil
+	}
+	return &catalogAddInput{
+		Name:       name,
+		Macros:     m,
+		HasMacros:  true,
+		Weight:     weight,
+		WeightUnit: weightUnit,
+	}
+}
+
+var macroLineRe = regexp.MustCompile(`^([a-zA-Zа-яА-ЯёЁ]+)[:\s]\s*(\d+[.,]?\d*)$`)
+
+func parseMacroLine(line string) (key string, val float64, ok bool) {
+	m := macroLineRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", 0, false
+	}
+	word := strings.ToLower(m[1])
+	valStr := strings.Replace(m[2], ",", ".", 1)
+	fmt.Sscanf(valStr, "%f", &val)
+
+	switch word {
+	case "к", "кал", "калории", "ккал", "cal", "calories":
+		return "cal", val, true
+	case "б", "белки", "белок", "протеин", "protein", "p":
+		return "pro", val, true
+	case "у", "углеводы", "карбс", "carbs", "carb":
+		return "carb", val, true
+	case "ж", "жиры", "жир", "fat", "fats", "f":
+		return "fat", val, true
+	}
+	return "", 0, false
+}
+
+// parseWeightLine checks if a line is just a weight, e.g. "30г", "150 g", "200мл".
+var weightLineRe = regexp.MustCompile(`^(\d+[.,]?\d*)\s*(г|g|гр|мл|ml)\s*$`)
+
+func parseWeightLine(line string) (weight float64, unit string, ok bool) {
+	m := weightLineRe.FindStringSubmatch(line)
+	if m == nil {
+		return 0, "", false
+	}
+	valStr := strings.Replace(m[1], ",", ".", 1)
+	fmt.Sscanf(valStr, "%f", &weight)
+	unit = m[2]
+	switch unit {
+	case "g", "гр":
+		unit = "г"
+	}
+	return weight, unit, true
 }
 
 // --- Username resolution ---
@@ -936,4 +1382,62 @@ func mcpCall(tool string, args map[string]any) (string, error) {
 		return "", err
 	}
 	return MCPCallFn(tool, data)
+}
+
+// catalogAddProduct adds a product via catalog_add_product and then patches the
+// serving with quantity/unit via catalog_update_item (the add endpoint only
+// accepts serving_label, not quantity/unit).
+func catalogAddProduct(name string, m macros, categoryName, servingLabel string, servingQty float64, servingUnit string) error {
+	addArgs := map[string]any{
+		"name":          name,
+		"calories":      m.Calories,
+		"protein":       m.Protein,
+		"carbs":         m.Carbs,
+		"fats":          m.Fats,
+		"category_name": categoryName,
+		"serving_label": servingLabel,
+	}
+	result, err := mcpCall("nutricalc__catalog_add_product", addArgs)
+	if err != nil {
+		return fmt.Errorf("catalog_add_product: %w", err)
+	}
+
+	// Parse response to get item ID and serving ID for the update call.
+	var addResp struct {
+		ID   string `json:"id"`
+		Item struct {
+			Servings []struct {
+				ID string `json:"id"`
+			} `json:"servings"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(result), &addResp); err != nil || addResp.ID == "" {
+		return nil // added OK but can't patch serving — non-fatal
+	}
+	servingID := ""
+	if len(addResp.Item.Servings) > 0 {
+		servingID = addResp.Item.Servings[0].ID
+	}
+	if servingID == "" {
+		return nil
+	}
+
+	// Patch the serving with quantity and unit.
+	updateArgs := map[string]any{
+		"id": addResp.ID,
+		"servings": []map[string]any{{
+			"id":       servingID,
+			"label":    servingLabel,
+			"quantity": servingQty,
+			"unit":     servingUnit,
+			"macros": map[string]any{
+				"calories": m.Calories,
+				"protein":  m.Protein,
+				"carbs":    m.Carbs,
+				"fats":     m.Fats,
+			},
+		}},
+	}
+	_, _ = mcpCall("nutricalc__catalog_update_item", updateArgs) // best-effort
+	return nil
 }

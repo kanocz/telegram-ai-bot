@@ -156,6 +156,17 @@ func resolveTextQuestion(chatID int64) *pendingQuestion {
 	return v.(*pendingQuestion)
 }
 
+// TelegramImageSender implements tools.ImageSender for Telegram bot sessions.
+type TelegramImageSender struct {
+	Token  string
+	ChatID int64
+}
+
+func (s *TelegramImageSender) SendImage(dataURI string, caption string) error {
+	_, err := sendPhotoDataURI(s.Token, s.ChatID, dataURI, caption, 0)
+	return err
+}
+
 // TelegramPrompter implements tools.UserPrompter for Telegram bot sessions.
 type TelegramPrompter struct {
 	Token  string
@@ -519,9 +530,12 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		}
 	}
 
-	// Enable ask_user tool for Telegram sessions
+	// Enable ask_user and send_image tools for Telegram sessions
 	tools.SetPrompter(&TelegramPrompter{Token: token, ChatID: msg.Chat.ID})
 	defer tools.ClearPrompter()
+	tools.SetImageSender(&TelegramImageSender{Token: token, ChatID: msg.Chat.ID})
+	defer tools.ClearImageSender()
+	defer tools.ClearSessionImages()
 
 	// Apply per-user language to prompts
 	lang := defaultLang

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -81,6 +84,74 @@ func sendTelegramChunk(token string, chatID int64, text, parseMode string, reply
 	}
 	if !result.OK {
 		return 0, fmt.Errorf("API error: %s", result.Description)
+	}
+	return result.Result.MessageID, nil
+}
+
+// sendPhotoDataURI sends a photo from a data URI (data:image/jpeg;base64,...) to a Telegram chat.
+// Returns the message_id of the sent photo message.
+func sendPhotoDataURI(token string, chatID int64, dataURI, caption string, replyToMsgID int64) (int64, error) {
+	// Parse data URI: "data:<mime>;base64,<data>"
+	parts := strings.SplitN(dataURI, ",", 2)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("invalid data URI")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("decode base64: %w", err)
+	}
+
+	// Determine extension from MIME
+	ext := ".jpg"
+	header := parts[0] // "data:image/png;base64"
+	if strings.Contains(header, "image/png") {
+		ext = ".png"
+	} else if strings.Contains(header, "image/gif") {
+		ext = ".gif"
+	} else if strings.Contains(header, "image/webp") {
+		ext = ".webp"
+	}
+
+	// Build multipart form
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if caption != "" {
+		_ = writer.WriteField("caption", caption)
+	}
+	if replyToMsgID != 0 {
+		_ = writer.WriteField("reply_to_message_id", strconv.FormatInt(replyToMsgID, 10))
+	}
+	part, err := writer.CreateFormFile("photo", "snapshot"+ext)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return 0, err
+	}
+	_ = writer.Close()
+
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", token)
+	resp, err := http.Post(apiURL, writer.FormDataContentType(), &buf)
+	if err != nil {
+		return 0, fmt.Errorf("sendPhoto request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("sendPhoto decode: %w", err)
+	}
+	if !result.OK {
+		return 0, fmt.Errorf("sendPhoto: %s", result.Description)
 	}
 	return result.Result.MessageID, nil
 }

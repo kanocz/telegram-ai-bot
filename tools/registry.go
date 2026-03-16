@@ -46,7 +46,8 @@ var registry = map[string]*Tool{}
 var SubAgentFn func(systemPrompt, userMessage string) (string, error)
 
 // SubAgentImageFn is like SubAgentFn but accepts image data URIs for vision tasks.
-var SubAgentImageFn func(systemPrompt, userMessage string, images []string) (string, error)
+// think overrides thinking mode: nil = use global default, *true = force enable, *false = force disable.
+var SubAgentImageFn func(systemPrompt, userMessage string, images []string, think *bool) (string, error)
 
 // MCPCallFn is set by main to allow tools to call MCP server tools directly.
 // qualifiedName is "server__tool", e.g. "nutricalc__catalog_search".
@@ -93,6 +94,38 @@ func TakePendingImages() []string {
 	return v.([]string)
 }
 
+// sessionImageStore holds images produced by tools during a session,
+// indexed by sequential 1-based IDs so the model can reference them.
+// Key: goroutineID, Value: *[]string (data URIs, index+1 = image ID).
+var sessionImageStore sync.Map
+
+// AddSessionImage stores an image data URI and returns its 1-based ID.
+func AddSessionImage(uri string) int {
+	id := goroutineID()
+	val, _ := sessionImageStore.LoadOrStore(id, &[]string{})
+	imgs := val.(*[]string)
+	*imgs = append(*imgs, uri)
+	return len(*imgs)
+}
+
+// GetSessionImage returns the data URI for the given 1-based image ID.
+func GetSessionImage(imageID int) (string, bool) {
+	val, ok := sessionImageStore.Load(goroutineID())
+	if !ok {
+		return "", false
+	}
+	imgs := val.(*[]string)
+	if imageID < 1 || imageID > len(*imgs) {
+		return "", false
+	}
+	return (*imgs)[imageID-1], true
+}
+
+// ClearSessionImages removes all stored session images for the current goroutine.
+func ClearSessionImages() {
+	sessionImageStore.Delete(goroutineID())
+}
+
 // All returns the definitions of all registered tools.
 // Tools are filtered by prefix based on per-goroutine availability.
 func All() []Definition {
@@ -103,6 +136,7 @@ func All() []Definition {
 	hideContacts := !ContactsAvailable()
 	hideContactsWrite := hideContacts || !ContactsWritable()
 	hideAsk := !AskAvailable()
+	hideImageSend := !ImageSenderAvailable()
 	hideMemory := !MemoryAvailable()
 
 	defs := make([]Definition, 0, len(registry))
@@ -128,6 +162,9 @@ func All() []Definition {
 			continue
 		}
 		if hideAsk && name == "ask_user" {
+			continue
+		}
+		if hideImageSend && name == "send_image" {
 			continue
 		}
 		if hideMemory && strings.HasPrefix(name, "memory_") {

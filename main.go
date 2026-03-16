@@ -329,7 +329,7 @@ func main() {
 	}
 
 	// SubAgentImageFn: like SubAgentFn but with image support
-	tools.SubAgentImageFn = func(systemPrompt, userMessage string, images []string) (string, error) {
+	tools.SubAgentImageFn = func(systemPrompt, userMessage string, images []string, thinkOverride *bool) (string, error) {
 		tools.SubAgentDepth.Add(1)
 		defer tools.SubAgentDepth.Add(-1)
 
@@ -341,7 +341,38 @@ func main() {
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage, Images: imgURLs},
 		}
-		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, think)
+		th := think
+		if thinkOverride != nil {
+			if *thinkOverride {
+				th = thinkEnable
+			} else {
+				th = thinkDisable
+			}
+		}
+
+		if showSA {
+			prefix := strings.Repeat(" | ", int(tools.SubAgentDepth.Load()))
+			pw := &prefixWriter{w: os.Stderr, prefix: prefix, bol: true}
+
+			pw.WriteString(colorCyan + "--- sub-agent (image) ---" + colorReset + "\n")
+			pw.WriteString(colorDim + "System: " + systemPrompt + colorReset + "\n")
+			input := userMessage
+			if len(input) > 300 {
+				input = input[:300] + "..."
+			}
+			pw.WriteString(colorDim + fmt.Sprintf("Input: %s [%d image(s)]", input, len(images)) + colorReset + "\n")
+			pw.WriteString("\n")
+
+			result, err := doSubAgentStream(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, pw, th)
+			if err != nil {
+				return "", err
+			}
+
+			pw.WriteString("\n" + colorCyan + "--- end sub-agent (image) ---" + colorReset + "\n")
+			return result, nil
+		}
+
+		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, th)
 	}
 
 	// Resolve user from users.json
@@ -625,6 +656,10 @@ func runQuery(cfg modelConfig, modelID string, query string,
 			if imgURIs := tools.TakePendingImages(); len(imgURIs) > 0 {
 				for _, uri := range imgURIs {
 					toolImages = append(toolImages, ImageURL{URL: uri})
+					imgID := tools.AddSessionImage(uri)
+					if tools.ImageSenderAvailable() {
+						toolResult += fmt.Sprintf("\n[Image #%d — use send_image to forward to the user]", imgID)
+					}
 				}
 			}
 
