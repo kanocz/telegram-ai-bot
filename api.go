@@ -45,12 +45,13 @@ type VideoURL struct {
 
 // Message represents a chat message in OpenAI format.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Images     []ImageURL `json:"-"` // vision images; handled by MarshalJSON
-	Videos     []VideoURL `json:"-"` // vision videos; handled by MarshalJSON
+	Role        string     `json:"role"`
+	Content     string     `json:"content,omitempty"`
+	ToolCalls   []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID  string     `json:"tool_call_id,omitempty"`
+	Images      []ImageURL `json:"-"` // vision images; handled by MarshalJSON
+	Videos      []VideoURL `json:"-"` // vision videos; handled by MarshalJSON
+	VideoFrames bool       `json:"-"` // marks messages containing video frames (for context stripping)
 }
 
 // MarshalJSON implements custom JSON marshaling for Message.

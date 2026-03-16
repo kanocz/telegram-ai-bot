@@ -599,12 +599,39 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 		if mimeType == "" {
 			mimeType = http.DetectContentType(data)
 		}
-		b64 := base64.StdEncoding.EncodeToString(data)
-		videos = append(videos, VideoURL{URL: fmt.Sprintf("data:%s;base64,%s", mimeType, b64)})
 
-		// Default prompt if no caption
+		// Default prompt if no caption (must be set before appending overview text)
 		if text == "" {
 			text = "Опиши это видео."
+		}
+
+		if cfg.VideoAsFrames != nil {
+			tmpPath, tmpErr := saveBytesToTempFile(data, mimeType)
+			if tmpErr != nil {
+				log.Printf("Error saving video to temp file: %v", tmpErr)
+				_ = sendToChat(token, chatID, fmt.Sprintf("Ошибка обработки видео: %v", tmpErr))
+				return
+			}
+			defer os.Remove(tmpPath)
+
+			frames, duration, fErr := extractFrames(tmpPath, cfg.VideoAsFrames.MaxFrames, cfg.VideoAsFrames.FrameWidth)
+			if fErr != nil {
+				log.Printf("Error extracting frames: %v", fErr)
+				_ = sendToChat(token, chatID, fmt.Sprintf("Ошибка извлечения кадров: %v", fErr))
+				return
+			}
+			for _, f := range frames {
+				images = append(images, ImageURL{URL: f.DataURI})
+			}
+			interval := duration / float64(len(frames))
+			text += fmt.Sprintf("\n\n=== Video Overview (%d frames from %s to %s, interval ~%.1fs) ===\n"+
+				"Use video_get_frames to zoom into specific time ranges at higher density/resolution.",
+				len(frames), tools.FormatTimestamp(0), tools.FormatTimestamp(duration), interval)
+			tools.SetVideoState(tmpPath, duration, cfg.VideoAsFrames.FrameWidth, cfg.VideoAsFrames.MaxFrames)
+			defer tools.ClearVideoState()
+		} else {
+			b64 := base64.StdEncoding.EncodeToString(data)
+			videos = append(videos, VideoURL{URL: fmt.Sprintf("data:%s;base64,%s", mimeType, b64)})
 		}
 	}
 

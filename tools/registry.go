@@ -170,6 +170,9 @@ func All() []Definition {
 		if hideMemory && strings.HasPrefix(name, "memory_") {
 			continue
 		}
+		if !VideoAvailable() && name == "video_get_frames" {
+			continue
+		}
 		defs = append(defs, t.Def)
 	}
 	return defs

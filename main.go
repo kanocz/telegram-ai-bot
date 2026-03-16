@@ -25,9 +25,10 @@ type limitConfig struct {
 }
 
 type modelConfig struct {
-	Name    string      `json:"name"`
-	BaseURL string      `json:"baseURL"`
-	Limit   limitConfig `json:"limit"`
+	Name          string            `json:"name"`
+	BaseURL       string            `json:"baseURL"`
+	Limit         limitConfig       `json:"limit"`
+	VideoAsFrames *VideoFrameConfig `json:"videoAsFrames,omitempty"`
 }
 
 type appConfig struct {
@@ -375,6 +376,19 @@ func main() {
 		return doChat(cfg.BaseURL, modelID, msgs, cfg.Limit.Output, cfg.Limit.Context, th)
 	}
 
+	// VideoFramesFn: extract frames from a video time range (used by video_get_frames tool)
+	tools.VideoFramesFn = func(videoPath string, startSec, endSec float64, maxFrames, frameWidth int) ([]tools.VideoFrameResult, error) {
+		frames, err := extractFramesRange(videoPath, startSec, endSec, maxFrames, frameWidth)
+		if err != nil {
+			return nil, err
+		}
+		var result []tools.VideoFrameResult
+		for _, f := range frames {
+			result = append(result, tools.VideoFrameResult{Timestamp: f.Timestamp, DataURI: f.DataURI})
+		}
+		return result, nil
+	}
+
 	// Resolve user from users.json
 	var user *UserConfig
 	users := getUsers()
@@ -560,12 +574,31 @@ func main() {
 
 	var videos []VideoURL
 	if *videoFile != "" {
-		dataURL, vidErr := loadFileDataURL(*videoFile)
-		if vidErr != nil {
-			fmt.Fprintf(os.Stderr, "video error: %v\n", vidErr)
-			os.Exit(1)
+		if cfg.VideoAsFrames != nil {
+			logf("%sИзвлечение кадров из видео...%s\n", colorDim, colorReset)
+			frames, duration, vErr := extractFrames(*videoFile, cfg.VideoAsFrames.MaxFrames, cfg.VideoAsFrames.FrameWidth)
+			if vErr != nil {
+				fmt.Fprintf(os.Stderr, "video frames error: %v\n", vErr)
+				os.Exit(1)
+			}
+			for _, f := range frames {
+				images = append(images, ImageURL{URL: f.DataURI})
+			}
+			interval := duration / float64(len(frames))
+			query += fmt.Sprintf("\n\n=== Video Overview (%d frames from %s to %s, interval ~%.1fs) ===\n"+
+				"Use video_get_frames to zoom into specific time ranges at higher density/resolution.",
+				len(frames), tools.FormatTimestamp(0), tools.FormatTimestamp(duration), interval)
+			tools.SetVideoState(*videoFile, duration, cfg.VideoAsFrames.FrameWidth, cfg.VideoAsFrames.MaxFrames)
+			defer tools.ClearVideoState()
+			logf("%sИзвлечено %d кадров (%.1f сек)%s\n", colorDim, len(frames), duration, colorReset)
+		} else {
+			dataURL, vidErr := loadFileDataURL(*videoFile)
+			if vidErr != nil {
+				fmt.Fprintf(os.Stderr, "video error: %v\n", vidErr)
+				os.Exit(1)
+			}
+			videos = append(videos, VideoURL{URL: dataURL})
 		}
-		videos = append(videos, VideoURL{URL: dataURL})
 	}
 
 	// Enable ask_user in interactive CLI mode (not telegram, quiet, mail, news, or -no-ask)
@@ -611,6 +644,9 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	execTool := makeToolExec(mcpMgr, mcpNames)
 
 	userMsg := Message{Role: "user", Content: query, Images: images, Videos: videos}
+	if strings.Contains(query, "\n=== Video Overview") {
+		userMsg.VideoFrames = true
+	}
 	messages := []Message{
 		{Role: "system", Content: prompts.SystemPrompt},
 	}
@@ -674,11 +710,23 @@ func runQuery(cfg modelConfig, modelID string, query string,
 				}
 			}
 
+			// Check if video_get_frames wants to strip old video frames
+			isVideoFrameResult := tools.TakeVideoFrameStrip()
+			if isVideoFrameResult {
+				for i := range messages {
+					if messages[i].VideoFrames {
+						messages[i].Images = nil
+						messages[i].VideoFrames = false
+					}
+				}
+			}
+
 			messages = append(messages, Message{
-				Role:       "tool",
-				Content:    toolResult,
-				ToolCallID: tc.ID,
-				Images:     toolImages,
+				Role:        "tool",
+				Content:     toolResult,
+				ToolCallID:  tc.ID,
+				Images:      toolImages,
+				VideoFrames: isVideoFrameResult && len(toolImages) > 0,
 			})
 		}
 	}
