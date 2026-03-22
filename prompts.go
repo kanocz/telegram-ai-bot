@@ -10,14 +10,16 @@ import (
 
 // Prompts holds all configurable prompt texts.
 type Prompts struct {
-	SystemPrompt       string
-	MailDigestSubAgent string
-	MailDigestFinal    string
+	SystemPrompt        string
+	MailDigestSubAgent  string
+	MailDigestFinal     string
 	NewsHeadlineExtract string
 	NewsTopicCluster    string
 	NewsTopicDeepDive   string
-	ImapSummarize      string
-	ImapDigest         string
+	NewsTopicSearch     string
+	NewsSearchKeywords  string
+	ImapSummarize       string
+	ImapDigest          string
 }
 
 type promptMeta struct {
@@ -32,6 +34,8 @@ var promptFields = []promptMeta{
 	{"news-headline-extract.txt", func(p *Prompts) *string { return &p.NewsHeadlineExtract }},
 	{"news-topic-cluster.txt", func(p *Prompts) *string { return &p.NewsTopicCluster }},
 	{"news-topic-deepdive.txt", func(p *Prompts) *string { return &p.NewsTopicDeepDive }},
+	{"news-topic-search.txt", func(p *Prompts) *string { return &p.NewsTopicSearch }},
+	{"news-search-keywords.txt", func(p *Prompts) *string { return &p.NewsSearchKeywords }},
 	{"imap-summarize.txt", func(p *Prompts) *string { return &p.ImapSummarize }},
 	{"imap-digest.txt", func(p *Prompts) *string { return &p.ImapDigest }},
 }
@@ -44,6 +48,8 @@ func defaultPrompts() Prompts {
 		NewsHeadlineExtract: defaultNewsHeadlineExtract,
 		NewsTopicCluster:    defaultNewsTopicCluster,
 		NewsTopicDeepDive:   defaultNewsTopicDeepDive,
+		NewsTopicSearch:     defaultNewsTopicSearch,
+		NewsSearchKeywords:  defaultNewsSearchKeywords,
 		ImapSummarize:       defaultImapSummarize,
 		ImapDigest:          defaultImapDigest,
 	}
@@ -200,6 +206,44 @@ const defaultNewsTopicDeepDive = `Ты — аналитик новостей. Т
 - Если статья не загрузилась — используй brief из заголовков.
 
 Язык ответа: {language}.`
+
+const defaultNewsTopicSearch = `Ты — аналитик-фильтр новостей. Тебе дан JSON с заголовками новостей из множества источников и поисковый запрос пользователя.
+
+Твоя задача — найти ВСЕ заголовки, которые связаны с запросом пользователя, и сгруппировать их по подтемам.
+
+ПРАВИЛА:
+- Включай только новости, релевантные запросу. Интерпретируй запрос широко: если пользователь ищет "выборы в Чехии", включай и результаты выборов, и кандидатов, и опросы, и реакции.
+- Одно и то же событие из разных источников — одна тема.
+- topic_title — краткое название события/подтемы на {language}.
+- brief — 1 предложение из исходного description.
+- Если ничего не найдено по запросу, верни пустой массив topics.
+
+Возвращай ТОЛЬКО валидный JSON, без пояснений.
+
+Поисковый запрос: {search_query}
+
+Формат:
+{"topics": [{"topic_title": "...", "articles": [{"source_name": "...", "title": "...", "article_url": "...", "brief": "..."}]}]}`
+
+const defaultNewsSearchKeywords = `Ты — помощник для поиска новостей. Пользователь ищет новости по запросу.
+
+Твоя задача — сгенерировать набор ключевых слов для фильтрации страниц новостных сайтов. Ключевые слова будут искаться в сыром тексте HTML-страниц (заголовки, анонсы, ссылки).
+
+ПРАВИЛА:
+- Сгенерируй группы ключевых слов. Каждая группа — это набор слов, которые ВСЕ должны присутствовать на странице (AND-логика внутри группы).
+- Между группами работает OR-логика: достаточно чтобы хотя бы одна группа совпала.
+- Включи варианты на ВСЕХ релевантных языках: чешском, английском, русском, украинском — в зависимости от того, какие источники могут содержать эту тему.
+- Слова должны быть достаточно уникальными для темы, но не слишком длинными (корни слов предпочтительнее полных форм, чтобы поймать склонения/спряжения).
+- Каждая группа должна содержать 2-3 слова для точности.
+- Используй lowercase.
+
+Возвращай ТОЛЬКО валидный JSON, без пояснений.
+
+Формат:
+{"keyword_groups": [["слово1", "слово2"], ["word1", "word2"]], "description": "краткое описание логики фильтрации"}
+
+Пример для запроса "выборы 2026 в Чехии":
+{"keyword_groups": [["volb", "česk"], ["volb", "2026"], ["election", "czech"], ["выбор", "чех"], ["вибор", "чех"]], "description": "Ищем сочетание слов о выборах + Чехия или 2026 на чешском, английском, русском и украинском"}`
 
 // AskUserPromptHint is appended to the system prompt when the ask_user tool is available.
 const AskUserPromptHint = `

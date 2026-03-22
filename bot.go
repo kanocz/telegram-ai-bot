@@ -739,7 +739,27 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
-		result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+		newsArg := strings.TrimSpace(strings.TrimPrefix(text, "/news"))
+		if newsArg == "" {
+			result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+		} else {
+			// Try to match a category for browse mode
+			categories, catErr := readNewsConfig(newsConfigPath)
+			if catErr != nil {
+				err = catErr
+			} else if cat := matchCategory(newsArg, categories); cat != nil {
+				prompter := tools.GetPrompter()
+				if prompter == nil {
+					// Fallback: no prompter, do full category summary without interaction
+					result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+				} else {
+					result, err = runNewsBrowse(cfg, modelID, cat, showThinking, debugOut, logf, &prompts, mcpMgr, mcpNames, think, mcpOverrides, prompter)
+				}
+			} else {
+				// Free text search
+				result, err = runNewsSearch(cfg, modelID, newsArg, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+			}
+		}
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0

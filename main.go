@@ -535,7 +535,38 @@ func main() {
 	}
 
 	if *newsSummary {
-		content, err := runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+		newsQuery := query // positional args serve as news query
+		var content string
+
+		if newsQuery == "" {
+			// No query — full summary (existing behavior)
+			content, err = runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+		} else {
+			// Try to match category for browse mode
+			categories, catErr := readNewsConfig(*newsConfig)
+			if catErr != nil {
+				fmt.Fprintf(os.Stderr, "news config error: %v\n", catErr)
+				os.Exit(1)
+			}
+			if cat := matchCategory(newsQuery, categories); cat != nil {
+				// Interactive browse: set up CLI prompter
+				if !*noAsk && !*telegram && !*quiet {
+					tools.SetPrompter(&CLIPrompter{})
+					defer tools.ClearPrompter()
+				}
+				prompter := tools.GetPrompter()
+				if prompter == nil {
+					// No interaction available — fall back to full summary
+					content, err = runNewsSummary(cfg, modelID, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+				} else {
+					content, err = runNewsBrowse(cfg, modelID, cat, showThinking, contentOut, logf, &prompts, mcpMgr, mcpNames, think, mcpOverrides, prompter)
+				}
+			} else {
+				// Free text search
+				content, err = runNewsSearch(cfg, modelID, newsQuery, showThinking, contentOut, logf, *newsConfig, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+			}
+		}
+
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
 			os.Exit(1)
