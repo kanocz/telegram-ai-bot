@@ -77,6 +77,8 @@ func main() {
 	requestDebugFlag := flag.Bool("request-debug", false, "dump API request JSON to stderr (base64 data truncated)")
 	mailSummary := flag.Bool("mail-summary", false, "standalone mail digest: fetch unread, group by sender, categorize")
 	newsSummary := flag.Bool("news-summary", false, "cross-referenced news digest from configured URLs")
+	newsInteractive := flag.Bool("news-interactive", false, "interactive news analysis session (REPL with context)")
+	interactive := flag.Bool("interactive", false, "interactive chat session with tools/skills/MCP (REPL)")
 	newsConfig := flag.String("news-config", "news.json", "path to news config file (JSON with categories)")
 	telegram := flag.Bool("telegram", false, "send output to Telegram instead of stdout")
 	telegramCfgPath := flag.String("telegram-config", "telegram.json", "path to telegram config file")
@@ -142,7 +144,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	if !*mailSummary && !*newsSummary && !*telegramBot && flag.NArg() < 1 {
+	if !*mailSummary && !*newsSummary && !*newsInteractive && !*interactive && !*telegramBot && flag.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <query>\n\nFlags:\n", os.Args[0])
 		flag.PrintDefaults()
 		os.Exit(1)
@@ -579,6 +581,55 @@ func main() {
 				os.Exit(1)
 			}
 			logf("%sОтправлено в Telegram (%d символов)%s\n", colorDim, len(content), colorReset)
+		}
+		return
+	}
+
+	// "." shortcut: interactive mode with filesystem (cwd, rw) + git
+	dotMode := query == "."
+	if dotMode {
+		query = "" // clear so the REPL prompts for input
+		cwd, _ := os.Getwd()
+		if *filesystemRoot == "" {
+			tools.RegisterFilesystem(cwd, true)
+		}
+		if *gitDir == "" && !*gitFlag {
+			tools.RegisterGit(cwd)
+		}
+	}
+
+	if *newsInteractive || *interactive || dotMode {
+		if memoryPath != "" {
+			prompts.SystemPrompt += MemoryPromptHint
+		}
+		prompts.SystemPrompt += AskUserPromptHint
+
+		mode := ""
+		if *newsInteractive {
+			mode = "news"
+		}
+		if dotMode {
+			mode = "dot"
+		}
+
+		ic := interactiveConfig{
+			Cfg:            cfg,
+			ModelID:        modelID,
+			ShowThinking:   showThinking,
+			VerboseTools:   *verboseTools,
+			Logf:           logf,
+			Prompts:        &prompts,
+			NewsConfigPath: *newsConfig,
+			McpMgr:         mcpMgr,
+			McpNames:       mcpNames,
+			Think:          think,
+			McpOverrides:   mcpOverrides,
+			Mode:           mode,
+		}
+
+		if err := runInteractive(ic, query); err != nil {
+			fmt.Fprintf(os.Stderr, "interactive error: %v\n", err)
+			os.Exit(1)
 		}
 		return
 	}

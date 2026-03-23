@@ -119,8 +119,11 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 
 ```
 ./ai-webfetch [flags] <query>
+./ai-webfetch .                                         # interactive mode with cwd filesystem + git
+./ai-webfetch -interactive [flags]                      # interactive chat REPL
+./ai-webfetch -news-interactive [flags]                 # interactive news REPL
+./ai-webfetch -news-summary [topic] [flags]             # news digest (full, by category, or by topic)
 ./ai-webfetch -mail-summary [flags]
-./ai-webfetch -news-summary [-news-config path] [flags]
 ./ai-webfetch -telegram-bot [-telegram-config path] [-config path] [-mcp-config path]
 ./ai-webfetch -export-default-prompts <dir>
 ```
@@ -134,8 +137,10 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-show-subagents` — show sub-agent activity: input, thinking, and output (indented with ` | `)
 - `-verbose-tools` — show tool call arguments and results (results truncated to 500 chars)
 - `-user name` — select user from `users.json` by name (auto-selects if only one user); enables IMAP, HA, MCP per user config
+- `-interactive` — interactive chat REPL with tools, skills, MCP, context tracking, `/compact`, and `@file` support
+- `-news-interactive` — interactive news analysis REPL (same as `-interactive` but news-focused prompt)
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
-- `-news-summary` — cross-referenced news digest: load URLs from file, sub-agents analyze each source (with `web_fetch` access), final summary grouped by events with Europe focus
+- `-news-summary [topic]` — news digest. Without arguments: full cross-referenced summary. With a category name (e.g. `europe`): interactive browse. With free text: topic search across all sources with keyword pre-filtering
 - `-news-config path` — path to news config file (default `news.json`)
 - `-image path` — attach an image file to the query (vision); the image is sent as a base64 data URI
 - `-video path` — attach a video file to the query (vision); the video is sent as a base64 data URI
@@ -278,6 +283,74 @@ Sub-agents analyze each news source (with ability to open full articles via `web
 ./ai-webfetch -news-summary -quiet -telegram    # cron mode
 ```
 
+### News — interactive category browse
+
+Browse a specific news category, see clustered topics, pick one for deep analysis:
+
+```bash
+./ai-webfetch -news-summary europe           # browse Europe category
+./ai-webfetch -news-summary война            # browse War category
+./ai-webfetch -news-summary экономика        # browse Economics category
+```
+
+Category names are matched flexibly: `europe`, `европа`, `eu`, `war`, `война`, `economics`, `экономика`, `world`, `мир`, `czech`, `чехия`, `cz`, etc.
+
+### News — topic search
+
+Search for a specific topic across all news sources:
+
+```bash
+./ai-webfetch -news-summary "2026 elections in Czech Republic"
+./ai-webfetch -news-summary "выборы 2026 в Чехии"
+./ai-webfetch -news-summary "Trump tariffs"
+```
+
+The search uses keyword pre-filtering: the LLM first generates multilingual keywords, then only pages containing matching keywords are processed (saving time on irrelevant sources).
+
+### Interactive mode
+
+Start an interactive REPL session with full tool support:
+
+```bash
+# General interactive mode
+./ai-webfetch -interactive
+
+# With MCP and skills
+./ai-webfetch -interactive -enable-mcp github -skills code-review
+
+# News-focused interactive mode
+./ai-webfetch -news-interactive
+
+# Dot shortcut: interactive + filesystem (cwd, read-write) + git
+./ai-webfetch .
+```
+
+The dot shortcut (`.`) is the quickest way to start chatting with the AI about files in the current directory. It auto-enables filesystem tools (read+write, sandboxed to cwd) and git history tools.
+
+REPL commands:
+- `<text>` — send query to AI (with full conversation history)
+- `/news [topic]` — news commands (full summary, category browse, or topic search)
+- `@file` — attach file contents to the query (`@"path with spaces"` for quoted paths)
+- `/compact` — compact context (summarize conversation history to save tokens)
+- `/help` — show available commands
+- `/exit` — exit (or `/quit`, `/q`, Ctrl+D)
+
+Context tracking: after each response, the current context usage is displayed with a progress bar. When usage exceeds 80%, the context is automatically compacted.
+
+```
+[контекст: ~12k/32k токенов [████████░░░░░░░░░░░░] 38%]
+```
+
+### Telegram bot — interactive news
+
+The Telegram bot also supports interactive news modes:
+
+```
+/news              — full news digest
+/news europe       — browse Europe category (with inline keyboard for topic selection)
+/news выборы 2026  — search for a specific topic across all sources
+```
+
 ### Mail — full digest with conversation history
 
 For each email, a sub-agent fetches content, searches conversation history in INBOX and Sent, and outputs summary, category, and context:
@@ -323,7 +396,9 @@ Start the webhook bot:
 ```
 
 Bot commands:
-- `/news` — news digest
+- `/news` — full news digest
+- `/news <category>` — interactive category browse (e.g. `/news europe`, `/news война`)
+- `/news <topic>` — topic search across all sources (e.g. `/news выборы 2026`)
 - `/mail [hours]` — mail digest (default 24 hours)
 - `/think <query>` — enable model thinking for this query
 - `/nothink <query>` — disable model thinking for this query
