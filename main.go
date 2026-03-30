@@ -450,13 +450,7 @@ func main() {
 	applyLanguage(&prompts, language)
 	installToolPrompts(&prompts)
 
-	// Inject current time into system prompt so the model knows "now"
-	now := time.Now()
-	zone, _ := now.Zone()
-	timeStr := fmt.Sprintf("\n\nCurrent time: %s (%s).",
-		now.Format("2006-01-02 15:04"), zone)
-	prompts.SystemPrompt += timeStr
-	promptsTemplate.SystemPrompt += timeStr
+	// NOTE: current time is injected dynamically per request in runQuery()
 
 	// Compute MCP overrides from user config
 	var mcpOverrides map[string]bool
@@ -729,8 +723,14 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	if strings.Contains(query, "\n=== Video Overview") {
 		userMsg.VideoFrames = true
 	}
+	// Inject current time dynamically so it's always fresh
+	now := time.Now()
+	zone, _ := now.Zone()
+	systemPrompt := prompts.SystemPrompt + fmt.Sprintf("\n\nCurrent time: %s (%s).",
+		now.Format("2006-01-02 15:04"), zone)
+
 	messages := []Message{
-		{Role: "system", Content: prompts.SystemPrompt},
+		{Role: "system", Content: systemPrompt},
 	}
 	messages = append(messages, history...)
 	messages = append(messages, userMsg)
