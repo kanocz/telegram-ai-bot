@@ -155,8 +155,8 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-mcp-config path` — path to MCP config file (default `mcp.json`)
 - `-skills name1,name2` — activate skills by name (comma-separated); also available as `/skills name1,name2` query prefix
 - `-skills-dir path` — override skills directory (default: searches multiple locations, see below)
-- `-filesystem path` — enable filesystem tools (`file_read`, `file_list`, `file_tree`) sandboxed to this directory
-- `-filesystem-rw` — also enable write tools (`file_write`, `file_patch`); requires `-filesystem`
+- `-filesystem path` — enable filesystem tools (`fs_list`, `fs_read`, `fs_info`, `fs_grep`) sandboxed to this directory
+- `-filesystem-rw` — also enable write tools (`fs_write`, `fs_patch`, etc.); requires `-filesystem`
 - `-git` — enable git history tools (`git_log`, `git_show`, `git_diff`); repo = `-filesystem` dir or cwd
 - `-git-dir path` — enable git history tools on a specific repo (implies `-git`)
 - `-no-ask` — disable the `ask_user` tool (for cron/scripting; the tool is also hidden in `-quiet`, `-telegram`, `-mail-summary`, and `-news-summary` modes)
@@ -192,6 +192,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 | `fs_list` | List directory contents (requires `-filesystem`) |
 | `fs_read` | Read file contents (requires `-filesystem`) |
 | `fs_info` | File/directory metadata (requires `-filesystem`) |
+| `fs_grep` | Search file contents by text or regex (requires `-filesystem`) |
 | `fs_write` | Write file (requires `-filesystem -filesystem-rw`) |
 | `fs_append` | Append to file (requires `-filesystem -filesystem-rw`) |
 | `fs_patch` | Patch file with search/replace (requires `-filesystem -filesystem-rw`) |

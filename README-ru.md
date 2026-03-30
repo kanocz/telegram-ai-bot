@@ -156,8 +156,8 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 - `-mcp-config path` — путь к конфигу MCP (по умолчанию `mcp.json`)
 - `-skills name1,name2` — активировать скиллы по имени (через запятую); также доступно как префикс `/skills name1,name2` в запросе
 - `-skills-dir path` — переопределить директорию скиллов (по умолчанию: поиск в нескольких местах, см. ниже)
-- `-filesystem path` — включить инструменты файловой системы (`file_read`, `file_list`, `file_tree`) в песочнице указанной директории
-- `-filesystem-rw` — также включить инструменты записи (`file_write`, `file_patch`); требует `-filesystem`
+- `-filesystem path` — включить инструменты файловой системы (`fs_list`, `fs_read`, `fs_info`, `fs_grep`) в песочнице указанной директории
+- `-filesystem-rw` — также включить инструменты записи (`fs_write`, `fs_patch` и др.); требует `-filesystem`
 - `-git` — включить инструменты git-истории (`git_log`, `git_show`, `git_diff`); репозиторий = директория `-filesystem` или cwd
 - `-git-dir path` — включить git-инструменты для конкретного репозитория (подразумевает `-git`)
 - `-no-ask` — отключить инструмент `ask_user` (для cron/скриптов; также скрыт в режимах `-quiet`, `-telegram`, `-mail-summary` и `-news-summary`)
@@ -193,6 +193,7 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 | `fs_list` | Список содержимого директории (требует `-filesystem`) |
 | `fs_read` | Чтение файла (требует `-filesystem`) |
 | `fs_info` | Метаданные файла/директории (требует `-filesystem`) |
+| `fs_grep` | Поиск по содержимому файлов: текст или regex (требует `-filesystem`) |
 | `fs_write` | Запись файла (требует `-filesystem -filesystem-rw`) |
 | `fs_append` | Дозапись в файл (требует `-filesystem -filesystem-rw`) |
 | `fs_patch` | Патч файла поиском/заменой (требует `-filesystem -filesystem-rw`) |
