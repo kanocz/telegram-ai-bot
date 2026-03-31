@@ -63,6 +63,7 @@ type UserConfig struct {
 	Contacts   *UserContactsConfig `json:"contacts,omitempty"`
 	MCP        map[string]bool     `json:"mcp,omitempty"`
 	Memory     string              `json:"memory,omitempty"`
+	Userinfo   string              `json:"userinfo,omitempty"`
 }
 
 var (

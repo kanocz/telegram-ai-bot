@@ -262,6 +262,15 @@ const MemoryPromptHint = `
   Persistent tools: memory_search, memory_store, memory_recall, memory_forget.
 - Session-scoped temp storage (memory_temp_put/get): use for accumulating data within a single multi-step task (e.g. collecting summaries from multiple emails before synthesis, tracking topics across news sources). Data is lost when session ends.`
 
+// UserInfoPromptHint is appended to the system prompt when userinfo tools are available.
+const UserInfoPromptHint = `
+- You have user settings tools (userinfo_set, userinfo_get, userinfo_list, userinfo_delete) for persistent user preferences.
+  - Use userinfo_set with in_prompt=true to store settings that should always be visible (timezone, name, language preferences).
+  - Use userinfo_set with only_for="module" to store settings that apply only when a specific skill/MCP/command is active (e.g. only_for="eat" for nutrition tracker username, only_for="github" for repo preferences).
+  - Settings with in_prompt=true or matching only_for are automatically injected into the system prompt — you don't need to retrieve them manually.
+  - Use userinfo_get/userinfo_list to read any setting regardless of its in_prompt/only_for flags.
+  - When the user asks you to "remember" a preference or setting (timezone, name, etc.), save it with userinfo_set.`
+
 const defaultImapSummarize =`Summarize the following email concisely in 2-3 sentences. Focus on the main topic, key information, and any action items. Response language: {language}.`
 
 const defaultImapDigest = `Analyze the email and its conversation history. Provide a structured response:

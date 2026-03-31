@@ -48,7 +48,8 @@ New format (with language):
       "context7": true,
       "github": false
     },
-    "memory": "/home/alice/.ai-memory"
+    "memory": "/home/alice/.ai-memory",
+    "userinfo": "/home/alice/.ai-userinfo.json"
   }
 }
 ```
@@ -63,6 +64,7 @@ New format (with language):
 - `contacts` = CardDAV settings (optional; if missing, contacts tools are hidden). `writable: true` enables create/update/delete.
 - `mcp` = per-user MCP server overrides (optional; `true` enables, `false` disables)
 - `memory` = path to persistent memory directory (optional; if missing, memory tools are hidden). Overridden by `-memory` flag, disabled by `-memory off`
+- `userinfo` = path to user settings JSON file (optional; if missing, userinfo tools are hidden). Overridden by `-userinfo` flag, disabled by `-userinfo off`. Settings with `in_prompt=true` or matching `only_for` are automatically injected into the system prompt
 - CLI: if only one user exists, it is auto-selected without `-user`
 
 ### homeassistant.json — Home Assistant
@@ -161,6 +163,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-git-dir path` — enable git history tools on a specific repo (implies `-git`)
 - `-no-ask` — disable the `ask_user` tool (for cron/scripting; the tool is also hidden in `-quiet`, `-telegram`, `-mail-summary`, and `-news-summary` modes)
 - `-memory path` — enable persistent memory tools at this directory; overrides `memory` from `users.json`. Use `-memory off` to disable memory even if configured in user settings
+- `-userinfo path` — enable user settings tools with this JSON file; overrides `userinfo` from `users.json`. Use `-userinfo off` to disable even if configured in user settings
 - `-export-default-prompts dir` — export default prompts to a directory and exit
 - `-prompts-dir dir` — load prompts from directory (missing files fall back to built-in defaults)
 
@@ -206,6 +209,10 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 | `memory_search` | Search memories by text, type, or tags (requires `-memory`) |
 | `memory_recall` | Full details of an entity: facts, relations, linked episodes (requires `-memory`) |
 | `memory_forget` | Delete an entity (with linked episodes) or a specific episode (requires `-memory`) |
+| `userinfo_set` | Set a user preference with optional `in_prompt` and `only_for` flags (requires `-userinfo` or `userinfo` in users.json) |
+| `userinfo_get` | Get a specific user setting by key (requires `-userinfo`) |
+| `userinfo_list` | List all user settings, optionally with full details (requires `-userinfo`) |
+| `userinfo_delete` | Delete a user setting by key (requires `-userinfo`) |
 
 ## Prompt customization
 
@@ -636,6 +643,65 @@ Two types of records:
 ```
 
 Priority: `-memory` flag > `memory` in `users.json` > disabled. In Telegram bot mode, memory path comes from user config.
+
+### User settings (userinfo)
+
+Persistent key-value settings that the AI can set and read. Settings can be automatically injected into the system prompt based on their flags:
+
+- **`in_prompt=true`** — always included in the system prompt (e.g. timezone, preferred name)
+- **`only_for="module"`** — included in the system prompt only when a specific skill, MCP server, or command is active (e.g. `only_for="eat"` for nutrition tracker username)
+- **`in_prompt=false, only_for=""`** — stored but not injected; accessible via `userinfo_get`/`userinfo_list`
+
+```bash
+# Enable via CLI flag
+./ai-webfetch -userinfo ./userinfo.json "Remember that my timezone is Europe/Prague"
+
+# Configured in users.json — no flag needed
+./ai-webfetch -user alice "Set my username for /eat to anton"
+
+# Disable for a single invocation
+./ai-webfetch -userinfo off -user alice "query without userinfo"
+```
+
+Example of stored settings (in userinfo JSON file):
+
+```json
+{
+  "alice": {
+    "timezone": {
+      "value": "Europe/Prague",
+      "in_prompt": true
+    },
+    "preferred_name": {
+      "value": "Alice",
+      "in_prompt": true
+    },
+    "eat_username": {
+      "value": "anton",
+      "only_for": "eat"
+    },
+    "github_style": {
+      "value": "Use conventional commits",
+      "only_for": "github"
+    }
+  }
+}
+```
+
+When a query uses `/eat`, the system prompt automatically includes:
+```
+User info (eat):
+  eat_username: anton
+```
+
+Global `in_prompt` settings are always included:
+```
+User info:
+  timezone: Europe/Prague
+  preferred_name: Alice
+```
+
+Priority: `-userinfo` flag > `userinfo` in `users.json` > disabled. In Telegram bot mode, the path comes from user config.
 
 ### Debugging sub-agents
 

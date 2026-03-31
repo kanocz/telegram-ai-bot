@@ -102,6 +102,7 @@ func main() {
 	skillsDirFlag := flag.String("skills-dir", "", "override skills directory (default: ~/.claude/skills)")
 	noAsk := flag.Bool("no-ask", false, "disable interactive ask_user tool (for cron/scripting)")
 	memoryFlag := flag.String("memory", "", "enable memory tools at this path (\"off\" to disable even if set in users.json)")
+	userinfoFlag := flag.String("userinfo", "", "enable userinfo tools at this path (\"off\" to disable even if set in users.json)")
 	flag.Parse()
 
 	requestDebug = *requestDebugFlag
@@ -393,6 +394,7 @@ func main() {
 
 	// Resolve user from users.json
 	var user *UserConfig
+	var userName string
 	users := getUsers()
 	if *userFlag != "" {
 		var err error
@@ -401,9 +403,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "user error: %v\n", err)
 			os.Exit(1)
 		}
+		userName = *userFlag
 	} else if len(users) == 1 {
-		for _, u := range users {
+		for k, u := range users {
 			user = u
+			userName = k
 		}
 	}
 
@@ -441,6 +445,23 @@ func main() {
 	if memoryPath != "" {
 		tools.SetMemoryOverride(memoryPath)
 		defer tools.ClearMemoryOverride()
+	}
+
+	// Determine userinfo path: user config, overridden by -userinfo flag
+	userinfoPath := ""
+	if user != nil && user.Userinfo != "" {
+		userinfoPath = user.Userinfo
+	}
+	if *userinfoFlag != "" {
+		if *userinfoFlag == "off" {
+			userinfoPath = ""
+		} else {
+			userinfoPath = *userinfoFlag
+		}
+	}
+	if userinfoPath != "" && userName != "" {
+		tools.SetUserInfoOverride(userinfoPath, userName)
+		defer tools.ClearUserInfoOverride()
 	}
 
 	// Save prompt template before language application (for bot per-user language)
@@ -596,6 +617,9 @@ func main() {
 		if memoryPath != "" {
 			prompts.SystemPrompt += MemoryPromptHint
 		}
+		if tools.UserInfoAvailable() {
+			prompts.SystemPrompt += UserInfoPromptHint
+		}
 		prompts.SystemPrompt += AskUserPromptHint
 
 		mode := ""
@@ -619,6 +643,7 @@ func main() {
 			Think:          think,
 			McpOverrides:   mcpOverrides,
 			Mode:           mode,
+			SkillNames:     skillNames,
 		}
 
 		if err := runInteractive(ic, query); err != nil {
@@ -687,8 +712,12 @@ func main() {
 	if memoryPath != "" {
 		prompts.SystemPrompt += MemoryPromptHint
 	}
+	if tools.UserInfoAvailable() {
+		prompts.SystemPrompt += UserInfoPromptHint
+	}
 
-	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil, mcpOverrides)
+	activeModules := append(append([]string{}, skillNames...), mcpNames...)
+	finalContent, err := runQuery(cfg, modelID, query, showThinking, *verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, nil, mcpOverrides, activeModules)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
@@ -710,7 +739,7 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	logf func(string, ...any), prompts *Prompts,
 	mcpMgr *MCPManager, mcpNames []string, think thinkMode,
 	images []ImageURL, videos []VideoURL, history []Message,
-	mcpOverrides map[string]bool) (string, error) {
+	mcpOverrides map[string]bool, activeModules []string) (string, error) {
 
 	// Merge built-in + MCP tool definitions
 	toolDefs := tools.All()
@@ -728,6 +757,11 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	zone, _ := now.Zone()
 	systemPrompt := prompts.SystemPrompt + fmt.Sprintf("\n\nCurrent time: %s (%s).",
 		now.Format("2006-01-02 15:04"), zone)
+
+	// Inject user info settings into the system prompt
+	if block := tools.UserInfoPromptBlock(activeModules); block != "" {
+		systemPrompt += block
+	}
 
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},

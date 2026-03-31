@@ -34,7 +34,8 @@
       "context7": true,
       "github": false
     },
-    "memory": "/home/alice/.ai-memory"
+    "memory": "/home/alice/.ai-memory",
+    "userinfo": "/home/alice/.ai-userinfo.json"
   },
   "bob": {
     "telegram_id": 987654321,
@@ -50,6 +51,7 @@
       "ical_urls": [
         { "name": "Public Holidays", "url": "https://example.com/holidays.ics" }
       ]
-    }
+    },
+    "userinfo": "/home/bob/.ai-userinfo.json"
   }
 }

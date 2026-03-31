@@ -38,6 +38,8 @@ type interactiveConfig struct {
 	// Mode controls the prompt and banner.
 	// "dot" = cwd mode, "news" = news-focused, "" = general-purpose.
 	Mode string
+	// SkillNames lists active skills (for userinfo prompt block).
+	SkillNames []string
 }
 
 // expandedInput holds the result of expanding @file references.
@@ -134,9 +136,10 @@ func runInteractive(ic interactiveConfig, initialQuery string) error {
 		default:
 			// General query — use LLM with full conversation history
 			history = append(history, Message{Role: "user", Content: expanded.Query, Images: expanded.Images})
+			activeModules := append(append([]string{}, ic.SkillNames...), ic.McpNames...)
 			result, err := runQuery(ic.Cfg, ic.ModelID, expanded.Query, ic.ShowThinking, ic.VerboseTools,
 				os.Stdout, ic.Logf, ic.Prompts, ic.McpMgr, ic.McpNames, ic.Think,
-				expanded.Images, nil, history[:len(history)-1], ic.McpOverrides)
+				expanded.Images, nil, history[:len(history)-1], ic.McpOverrides, activeModules)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\n%sError: %v%s\n", colorCyan, err, colorReset)
 				history = history[:len(history)-1] // remove failed user message

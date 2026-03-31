@@ -425,8 +425,15 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 
 		// Resolve user by Telegram ID
 		var user *UserConfig
+		var userName string
 		if msg.From != nil && users != nil {
-			user = resolveUserByTelegramID(users, msg.From.ID)
+			for k, u := range users {
+				if u.TelegramID == msg.From.ID {
+					user = u
+					userName = k
+					break
+				}
+			}
 		}
 
 		// Access control
@@ -459,7 +466,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		}
 
 		// Process asynchronously
-		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, promptsTemplate, defaultLang, verboseTools, newsConfigPath, mcpMgr, globalThink, msg, user)
+		go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, promptsTemplate, defaultLang, verboseTools, newsConfigPath, mcpMgr, globalThink, msg, user, userName)
 	})
 
 	server := &http.Server{
@@ -497,7 +504,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 
 func handleBotMessage(token string, cfg modelConfig, modelID string,
 	showThinking bool, logf func(string, ...any), promptsTemplate *Prompts, defaultLang string,
-	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode, msg *TGMessage, user *UserConfig) {
+	verboseTools bool, newsConfigPath string, mcpMgr *MCPManager, globalThink thinkMode, msg *TGMessage, user *UserConfig, userName string) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -528,6 +535,10 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			defer tools.ClearMemoryOverride()
 			defer tools.ClearTempMemory()
 		}
+		if user.Userinfo != "" && userName != "" {
+			tools.SetUserInfoOverride(user.Userinfo, userName)
+			defer tools.ClearUserInfoOverride()
+		}
 	}
 
 	// Enable ask_user and send_image tools for Telegram sessions
@@ -547,6 +558,9 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	prompts.SystemPrompt += AskUserPromptHint
 	if user != nil && user.Memory != "" {
 		prompts.SystemPrompt += MemoryPromptHint
+	}
+	if tools.UserInfoAvailable() {
+		prompts.SystemPrompt += UserInfoPromptHint
 	}
 
 	// Compute MCP overrides from user config
@@ -808,7 +822,8 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 		var contentBuf strings.Builder
 		contentOut := io.MultiWriter(&contentBuf, debugOut)
-		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, history, mcpOverrides)
+		activeModules := append(append([]string{}, skillNames...), mcpNames...)
+		result, err = runQuery(cfg, modelID, query, showThinking, verboseTools, contentOut, logf, &prompts, mcpMgr, mcpNames, think, images, videos, history, mcpOverrides, activeModules)
 		// runQuery returns only the last round's content; contentBuf has
 		// accumulated content from ALL rounds (including intermediate tool-calling
 		// rounds). Use it as fallback when the final response is empty.
