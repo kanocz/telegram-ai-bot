@@ -55,19 +55,27 @@ type haConfig struct {
 	Token string `json:"token"`
 }
 
-var haCfg *haConfig
+var (
+	haCfg     *haConfig
+	haCfgPath = "homeassistant.json"
+)
+
+// SetHAConfigPath overrides the path to homeassistant.json.
+func SetHAConfigPath(path string) {
+	haCfgPath = path
+}
 
 func getHAConfig() (*haConfig, error) {
 	if haCfg != nil {
 		return haCfg, nil
 	}
-	data, err := os.ReadFile("homeassistant.json")
+	data, err := os.ReadFile(haCfgPath)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read homeassistant.json: %w", err)
+		return nil, fmt.Errorf("cannot read %s: %w", haCfgPath, err)
 	}
 	var cfg haConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("invalid homeassistant.json: %w", err)
+		return nil, fmt.Errorf("invalid %s: %w", haCfgPath, err)
 	}
 	cfg.URL = strings.TrimRight(cfg.URL, "/")
 	haCfg = &cfg

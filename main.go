@@ -36,6 +36,8 @@ type appConfig struct {
 	Language string                 `json:"language"`
 }
 
+func strPtr(s string) *string { return &s }
+
 func loadConfig(path string) (modelID string, cfg modelConfig, language string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -79,18 +81,18 @@ func main() {
 	newsSummary := flag.Bool("news-summary", false, "cross-referenced news digest from configured URLs")
 	newsInteractive := flag.Bool("news-interactive", false, "interactive news analysis session (REPL with context)")
 	interactive := flag.Bool("interactive", false, "interactive chat session with tools/skills/MCP (REPL)")
-	newsConfig := flag.String("news-config", "news.json", "path to news config file (JSON with categories)")
+	newsConfig := flag.String("news-config", "", "path to news config file (JSON with categories)")
 	telegram := flag.Bool("telegram", false, "send output to Telegram instead of stdout")
-	telegramCfgPath := flag.String("telegram-config", "telegram.json", "path to telegram config file")
+	telegramCfgPath := flag.String("telegram-config", "", "path to telegram config file")
 	telegramChatID := flag.Int64("telegram-chatid", 0, "override Telegram chat ID for this invocation")
 	telegramBot := flag.Bool("telegram-bot", false, "run as Telegram webhook bot service")
 	quiet := flag.Bool("quiet", false, "suppress all non-error output (for cron)")
-	configPath := flag.String("config", "config.json", "path to config file")
+	configPath := flag.String("config", "", "path to config file (also sets base dir for other configs)")
 	languageFlag := flag.String("language", "", "response language (overrides config)")
 	exportDefaultPrompts := flag.String("export-default-prompts", "", "export default prompts to directory and exit")
 	promptsDir := flag.String("prompts-dir", "", "load prompts from directory (missing files use defaults)")
 	enableMCP := flag.String("enable-mcp", "", "activate MCP servers by name (comma-separated)")
-	mcpConfigPath := flag.String("mcp-config", "mcp.json", "path to MCP server config file")
+	mcpConfigPath := flag.String("mcp-config", "", "path to MCP server config file")
 	imageFile := flag.String("image", "", "path to image file to attach to query (vision)")
 	videoFile := flag.String("video", "", "path to video file to attach to query (vision)")
 	filesystemRoot := flag.String("filesystem", "", "enable filesystem tools sandboxed to this directory")
@@ -104,6 +106,34 @@ func main() {
 	memoryFlag := flag.String("memory", "", "enable memory tools at this path (\"off\" to disable even if set in users.json)")
 	userinfoFlag := flag.String("userinfo", "", "enable userinfo tools at this path (\"off\" to disable even if set in users.json)")
 	flag.Parse()
+
+	// Resolve config base directory and default config paths.
+	// If -config is given, its directory becomes the base for other configs.
+	// Otherwise, default base is ~/.config/tgbot/.
+	configDir := ""
+	if *configPath != "" {
+		configDir = filepath.Dir(*configPath)
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot determine home directory: %v\n", err)
+			os.Exit(1)
+		}
+		configDir = filepath.Join(home, ".config", "tgbot")
+		configPath = strPtr(filepath.Join(configDir, "config.json"))
+	}
+	// Fill in unset config paths from configDir
+	if *telegramCfgPath == "" {
+		telegramCfgPath = strPtr(filepath.Join(configDir, "telegram.json"))
+	}
+	if *newsConfig == "" {
+		newsConfig = strPtr(filepath.Join(configDir, "news.json"))
+	}
+	if *mcpConfigPath == "" {
+		mcpConfigPath = strPtr(filepath.Join(configDir, "mcp.json"))
+	}
+	usersPath = filepath.Join(configDir, "users.json")
+	tools.SetHAConfigPath(filepath.Join(configDir, "homeassistant.json"))
 
 	requestDebug = *requestDebugFlag
 	quietMode = *quiet

@@ -4,6 +4,13 @@ Telegram bot and CLI tool: AI assistant with web, email (IMAP), Home Assistant, 
 
 ## Configuration
 
+All config files are looked up from a single **config directory**:
+
+1. If `-config path/to/config.json` is given — the directory of that file is used (e.g. `-config /etc/mybot/config.json` → `/etc/mybot/`)
+2. Otherwise — `~/.config/tgbot/`
+
+Individual flags (`-telegram-config`, `-news-config`, `-mcp-config`) override specific files. Files without a dedicated flag (`users.json`, `homeassistant.json`) always come from the config directory.
+
 ### config.json — AI model and language
 
 New format (with language):
@@ -143,18 +150,18 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-news-interactive` — interactive news analysis REPL (same as `-interactive` but news-focused prompt)
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
 - `-news-summary [topic]` — news digest. Without arguments: full cross-referenced summary. With a category name (e.g. `europe`): interactive browse. With free text: topic search across all sources with keyword pre-filtering
-- `-news-config path` — path to news config file (default `news.json`)
+- `-news-config path` — path to news config file (default: `<config-dir>/news.json`)
 - `-image path` — attach an image file to the query (vision); the image is sent as a base64 data URI
 - `-video path` — attach a video file to the query (vision); the video is sent as a base64 data URI
 - `-quiet` — suppress all non-error output (for cron); implies `-no-think`
 - `-telegram` — send output to Telegram instead of stdout (requires `telegram.json`)
-- `-telegram-config path` — path to Telegram config (default `telegram.json`)
+- `-telegram-config path` — path to Telegram config (default: `<config-dir>/telegram.json`)
 - `-telegram-chatid id` — override chat ID for a single invocation (all categories go to one chat)
 - `-telegram-bot` — run as Telegram webhook bot service (requires `bot` section in `telegram.json`)
-- `-config path` — path to config.json (default `config.json`)
+- `-config path` — path to config.json; also sets the base directory for all other configs (default: `~/.config/tgbot/config.json`)
 - `-language lang` — response language (overrides config.json; default `русский`)
 - `-enable-mcp name1,name2` — activate MCP servers for this query (comma-separated)
-- `-mcp-config path` — path to MCP config file (default `mcp.json`)
+- `-mcp-config path` — path to MCP config file (default: `<config-dir>/mcp.json`)
 - `-skills name1,name2` — activate skills by name (comma-separated); also available as `/skills name1,name2` query prefix
 - `-skills-dir path` — override skills directory (default: searches multiple locations, see below)
 - `-filesystem path` — enable filesystem tools (`fs_list`, `fs_read`, `fs_info`, `fs_grep`) sandboxed to this directory
