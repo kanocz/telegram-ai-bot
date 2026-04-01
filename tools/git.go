@@ -13,12 +13,13 @@ import (
 )
 
 // RegisterGit registers git history tools for the repository at repoPath.
-func RegisterGit(repoPath string) {
+// Returns an error if the path is not a git repository.
+func RegisterGit(repoPath string) error {
 	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{
 		DetectDotGit: true,
 	})
 	if err != nil {
-		panic("git: cannot open repository: " + err.Error())
+		return fmt.Errorf("cannot open repository at %s: %w", repoPath, err)
 	}
 
 	Register(&Tool{
@@ -290,6 +291,8 @@ func RegisterGit(repoPath string) {
 			return diffStr, nil
 		},
 	})
+
+	return nil
 }
 
 // resolveCommit resolves a full or abbreviated commit hash to a Commit object.

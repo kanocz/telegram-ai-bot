@@ -146,7 +146,7 @@ The `bot` section is optional (only required for `-telegram-bot`). Chat routing 
 - `-show-subagents` — show sub-agent activity: input, thinking, and output (indented with ` | `)
 - `-verbose-tools` — show tool call arguments and results (results truncated to 500 chars)
 - `-user name` — select user from `users.json` by name (auto-selects if only one user); enables IMAP, HA, MCP per user config
-- `-interactive` — interactive chat REPL with tools, skills, MCP, context tracking, `/compact`, and `@file` support
+- `-interactive` (alias: `-cli`) — interactive chat REPL with tools, skills, MCP, context tracking, `/compact`, and `@file` support
 - `-news-interactive` — interactive news analysis REPL (same as `-interactive` but news-focused prompt)
 - `-mail-summary` — standalone mail digest: fetch unread, group by sender, categorize (no tool-loop)
 - `-news-summary [topic]` — news digest. Without arguments: full cross-referenced summary. With a category name (e.g. `europe`): interactive browse. With free text: topic search across all sources with keyword pre-filtering

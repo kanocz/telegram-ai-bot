@@ -81,6 +81,7 @@ func main() {
 	newsSummary := flag.Bool("news-summary", false, "cross-referenced news digest from configured URLs")
 	newsInteractive := flag.Bool("news-interactive", false, "interactive news analysis session (REPL with context)")
 	interactive := flag.Bool("interactive", false, "interactive chat session with tools/skills/MCP (REPL)")
+	cliMode := flag.Bool("cli", false, "alias for -interactive")
 	newsConfig := flag.String("news-config", "", "path to news config file (JSON with categories)")
 	telegram := flag.Bool("telegram", false, "send output to Telegram instead of stdout")
 	telegramCfgPath := flag.String("telegram-config", "", "path to telegram config file")
@@ -135,6 +136,11 @@ func main() {
 	usersPath = filepath.Join(configDir, "users.json")
 	tools.SetHAConfigPath(filepath.Join(configDir, "homeassistant.json"))
 
+	// Merge -cli alias into interactive
+	if *cliMode {
+		*interactive = true
+	}
+
 	requestDebug = *requestDebugFlag
 	quietMode = *quiet
 
@@ -151,7 +157,10 @@ func main() {
 				repoPath, _ = os.Getwd()
 			}
 		}
-		tools.RegisterGit(repoPath)
+		if err := tools.RegisterGit(repoPath); err != nil {
+			fmt.Fprintf(os.Stderr, "git error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Reset terminal colors on Ctrl+C (interactive mode only)
@@ -639,7 +648,9 @@ func main() {
 			tools.RegisterFilesystem(cwd, true)
 		}
 		if *gitDir == "" && !*gitFlag {
-			tools.RegisterGit(cwd)
+			if err := tools.RegisterGit(cwd); err != nil {
+				logf("git: %v (git tools disabled)\n", err)
+			}
 		}
 	}
 
