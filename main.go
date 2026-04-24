@@ -116,11 +116,11 @@ func main() {
 		configDir = filepath.Dir(*configPath)
 	} else {
 		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot determine home directory: %v\n", err)
-			os.Exit(1)
+		if err == nil {
+			configDir = filepath.Join(home, ".config", "tgbot")
+		} else {
+			configDir = "." // fallback: current directory (e.g. systemd service without $HOME)
 		}
-		configDir = filepath.Join(home, ".config", "tgbot")
 		configPath = strPtr(filepath.Join(configDir, "config.json"))
 	}
 	// Fill in unset config paths from configDir

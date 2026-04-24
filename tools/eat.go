@@ -1166,6 +1166,17 @@ func parseWeightLine(line string) (weight float64, unit string, ok bool) {
 // --- Username resolution ---
 
 func resolveNutricalcUsername() (string, error) {
+	// Try userinfo first (most reliable — persisted to file)
+	if cfg := getUserInfoConfig(); cfg != nil {
+		if entries, err := userInfoGet(cfg); err == nil {
+			for _, key := range []string{"nutricalc_username", "eat_username"} {
+				if e, ok := entries[key]; ok && e.Value != "" {
+					return e.Value, nil
+				}
+			}
+		}
+	}
+
 	// Try memory_search
 	if tool, ok := Get("memory_search"); ok {
 		args, _ := json.Marshal(map[string]string{"query": "nutricalc username"})
@@ -1191,7 +1202,14 @@ func resolveNutricalcUsername() (string, error) {
 			return "", fmt.Errorf("empty username")
 		}
 
-		// Save to memory
+		// Save to userinfo (persistent, checked first on next call)
+		if cfg := getUserInfoConfig(); cfg != nil {
+			userInfoSet(cfg, "nutricalc_username", UserInfoEntry{
+				Value:   username,
+				OnlyFor: "eat",
+			})
+		}
+		// Save to memory as fallback
 		if tool, ok := Get("memory_store"); ok {
 			args, _ := json.Marshal(map[string]any{
 				"entity_id": "pref:nutricalc_username",
