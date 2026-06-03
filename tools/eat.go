@@ -18,6 +18,14 @@ func init() {
 	})
 }
 
+// nutriTimestamp returns the current local time as an RFC3339 string with
+// timezone offset. The nutricalc server requires RFC3339 and preserves the
+// offset; without it the server defaults to "now" in UTC, which shows meals
+// shifted by the local UTC offset (e.g. -2h in CEST).
+func nutriTimestamp() string {
+	return time.Now().Format(time.RFC3339)
+}
+
 // --- Data types ---
 
 type eatItem struct {
@@ -272,10 +280,10 @@ func handleEatLabel(analysis imageAnalysisResult, captionText string, username, 
 func handleLabelWithWeight(name string, per100g macros, weight float64, weightUnit string, username, date string) (string, error) {
 	ratio := weight / 100
 	diaryMacros := macros{
-		Calories: math.Round(per100g.Calories * ratio * 10) / 10,
-		Protein:  math.Round(per100g.Protein * ratio * 10) / 10,
-		Carbs:    math.Round(per100g.Carbs * ratio * 10) / 10,
-		Fats:     math.Round(per100g.Fats * ratio * 10) / 10,
+		Calories: math.Round(per100g.Calories*ratio*10) / 10,
+		Protein:  math.Round(per100g.Protein*ratio*10) / 10,
+		Carbs:    math.Round(per100g.Carbs*ratio*10) / 10,
+		Fats:     math.Round(per100g.Fats*ratio*10) / 10,
 	}
 
 	if !AskAvailable() {
@@ -319,6 +327,7 @@ func handleLabelWithWeight(name string, per100g macros, weight float64, weightUn
 			"carbs":     diaryMacros.Carbs,
 			"fats":      diaryMacros.Fats,
 			"is_custom": true,
+			"timestamp": nutriTimestamp(),
 		}
 		_, err := mcpCall("nutricalc__diary_add_meal", mealArgs)
 		if err != nil {
@@ -382,10 +391,10 @@ func handleLabelNoWeight(name string, per100g macros, username, date string) (st
 
 		ratio := w / 100
 		diaryMacros := macros{
-			Calories: math.Round(per100g.Calories * ratio * 10) / 10,
-			Protein:  math.Round(per100g.Protein * ratio * 10) / 10,
-			Carbs:    math.Round(per100g.Carbs * ratio * 10) / 10,
-			Fats:     math.Round(per100g.Fats * ratio * 10) / 10,
+			Calories: math.Round(per100g.Calories*ratio*10) / 10,
+			Protein:  math.Round(per100g.Protein*ratio*10) / 10,
+			Carbs:    math.Round(per100g.Carbs*ratio*10) / 10,
+			Fats:     math.Round(per100g.Fats*ratio*10) / 10,
 		}
 
 		mealArgs := map[string]any{
@@ -397,6 +406,7 @@ func handleLabelNoWeight(name string, per100g macros, username, date string) (st
 			"carbs":     diaryMacros.Carbs,
 			"fats":      diaryMacros.Fats,
 			"is_custom": true,
+			"timestamp": nutriTimestamp(),
 		}
 		_, err = mcpCall("nutricalc__diary_add_meal", mealArgs)
 		if err != nil {
@@ -495,6 +505,7 @@ func addAndReport(match *catalogItem, label string, serving catalogServing, quan
 		"item_id":    match.ID,
 		"serving_id": serving.ID,
 		"quantity":   math.Round(quantity*1000) / 1000,
+		"timestamp":  nutriTimestamp(),
 	}
 
 	_, err := mcpCall("nutricalc__diary_add_meal", mealArgs)
@@ -927,7 +938,7 @@ func handleCatalogAdd(ca *catalogAddInput, username, date string) (string, error
 		perServing := answer != "100г"
 
 		var catalogMacros macros // per 100g for catalog
-		var diaryMacros macros  // actual for this weight
+		var diaryMacros macros   // actual for this weight
 		var servingLabel string
 
 		if perServing {
@@ -989,6 +1000,7 @@ func handleCatalogAdd(ca *catalogAddInput, username, date string) (string, error
 				"carbs":     diaryMacros.Carbs,
 				"fats":      diaryMacros.Fats,
 				"is_custom": true,
+				"timestamp": nutriTimestamp(),
 			}
 			_, err := mcpCall("nutricalc__diary_add_meal", mealArgs)
 			if err != nil {
@@ -1062,10 +1074,10 @@ func estimateMacrosWithConfirm(name string) (macros, error) {
 
 // catalogAddInput is the parsed result of a multi-line catalog-add message.
 type catalogAddInput struct {
-	Name      string
-	Macros    macros
-	HasMacros bool
-	Weight    float64 // trailing weight in grams, 0 if absent
+	Name       string
+	Macros     macros
+	HasMacros  bool
+	Weight     float64 // trailing weight in grams, 0 if absent
 	WeightUnit string  // "г", "мл", etc.
 }
 
