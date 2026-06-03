@@ -17,7 +17,7 @@ type Property struct {
 type Parameters struct {
 	Type       string              `json:"type"`
 	Properties map[string]Property `json:"properties"`
-	Required   []string            `json:"required"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 // Function describes a callable function exposed as a tool.
