@@ -358,6 +358,7 @@ func handleLabelNoWeight(name string, per100g macros, username, date string) (st
 		Options: []UserOption{
 			{Label: "В каталог"},
 			{Label: "В каталог + дневник"},
+			{Label: "Только дневник"},
 			{Label: "Отмена"},
 		},
 	})
@@ -368,17 +369,26 @@ func handleLabelNoWeight(name string, per100g macros, username, date string) (st
 		return "Отменено", nil
 	}
 
-	if err := catalogAddProduct(name, per100g, "AI", "100g", 100, "г"); err != nil {
-		return "", err
+	addToCatalog := answer != "Только дневник"
+	addToDiary := answer == "В каталог + дневник" || answer == "Только дневник"
+
+	var parts []string
+
+	if addToCatalog {
+		if err := catalogAddProduct(name, per100g, "AI", "100g", 100, "г"); err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("+ В каталог: %s (%.0f ккал/100г)", name, per100g.Calories))
 	}
 
-	parts := []string{fmt.Sprintf("+ В каталог: %s (%.0f ккал/100г)", name, per100g.Calories)}
-
-	if answer == "В каталог + дневник" {
+	if addToDiary {
 		weightAnswer, err := GetPrompter().Ask(UserQuestion{
 			Question: "Введите вес в граммах:",
 		})
 		if err != nil {
+			if len(parts) == 0 {
+				return "Отменено", nil
+			}
 			return strings.Join(parts, "\n"), nil
 		}
 		weightAnswer = strings.Replace(weightAnswer, ",", ".", 1)
