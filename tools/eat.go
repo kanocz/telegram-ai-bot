@@ -39,12 +39,17 @@ func nutriLocation() *time.Location {
 	return time.Local
 }
 
-// nutriTimestamp returns the current time in the user's configured zone as an
-// RFC3339 string with offset. The nutricalc server requires RFC3339 and
-// preserves the offset; without a correct offset it shows meals shifted (e.g.
-// -2h when the bot runs in UTC but the user is in CEST).
+// nutriTimestamp returns an RFC3339 timestamp that makes the nutricalc UI show
+// the user's local wall-clock time. The server requires RFC3339 (it rejects a
+// naive timestamp) but its UI renders the stored instant in UTC — so sending
+// the real local offset (e.g. 19:20+02:00) displays as 17:20. We therefore
+// take the user's local wall clock and label it as UTC (19:20Z), which the UI
+// then renders as 19:20.
 func nutriTimestamp() string {
-	return time.Now().In(nutriLocation()).Format(time.RFC3339)
+	now := time.Now().In(nutriLocation())
+	wall := time.Date(now.Year(), now.Month(), now.Day(),
+		now.Hour(), now.Minute(), now.Second(), 0, time.UTC)
+	return wall.Format(time.RFC3339)
 }
 
 // --- Data types ---
