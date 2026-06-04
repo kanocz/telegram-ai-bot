@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // embed the IANA tz database so LoadLocation works on minimal hosts
 
 	"ai-webfetch/tools"
 )

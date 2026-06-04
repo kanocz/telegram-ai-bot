@@ -18,12 +18,33 @@ func init() {
 	})
 }
 
-// nutriTimestamp returns the current local time as an RFC3339 string with
-// timezone offset. The nutricalc server requires RFC3339 and preserves the
-// offset; without it the server defaults to "now" in UTC, which shows meals
-// shifted by the local UTC offset (e.g. -2h in CEST).
+// nutriLocation returns the user's configured time zone for nutricalc,
+// falling back to the process local zone. The bot service often runs in UTC
+// while the user lives elsewhere, so relying on time.Now() alone would stamp
+// meals with the wrong offset. Configure via userinfo: a module setting
+// "nutricalc_timezone" (only_for "eat") or a global "timezone"/"tz", e.g.
+// "Europe/Prague".
+func nutriLocation() *time.Location {
+	if cfg := getUserInfoConfig(); cfg != nil {
+		if entries, err := userInfoGet(cfg); err == nil {
+			for _, key := range []string{"nutricalc_timezone", "timezone", "tz"} {
+				if e, ok := entries[key]; ok && e.Value != "" {
+					if loc, err := time.LoadLocation(e.Value); err == nil {
+						return loc
+					}
+				}
+			}
+		}
+	}
+	return time.Local
+}
+
+// nutriTimestamp returns the current time in the user's configured zone as an
+// RFC3339 string with offset. The nutricalc server requires RFC3339 and
+// preserves the offset; without a correct offset it shows meals shifted (e.g.
+// -2h when the bot runs in UTC but the user is in CEST).
 func nutriTimestamp() string {
-	return time.Now().Format(time.RFC3339)
+	return time.Now().In(nutriLocation()).Format(time.RFC3339)
 }
 
 // --- Data types ---
@@ -97,7 +118,7 @@ func handleEat(ctx *CommandContext) (string, error) {
 	}
 
 	text := strings.TrimSpace(ctx.Text)
-	today := time.Now().Format("2006-01-02")
+	today := time.Now().In(nutriLocation()).Format("2006-01-02")
 
 	// Step 1: Determine mode
 	switch {
