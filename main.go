@@ -154,6 +154,7 @@ func main() {
 	}
 	usersPath = filepath.Join(configDir, "users.json")
 	tools.SetHAConfigPath(filepath.Join(configDir, "homeassistant.json"))
+	tools.SetImageGenConfigPath(filepath.Join(configDir, "thenoise.json"))
 
 	// Close the Home Assistant WebSocket on the way out. Declared here rather
 	// than next to the one-shot query path, which the bot and interactive
@@ -586,6 +587,14 @@ func main() {
 			}
 
 			ctx := &tools.CommandContext{Text: cmdText}
+			if *imageFile != "" {
+				dataURL, imgErr := loadFileDataURL(*imageFile)
+				if imgErr != nil {
+					fmt.Fprintf(os.Stderr, "image error: %v\n", imgErr)
+					os.Exit(1)
+				}
+				ctx.Images = []string{dataURL}
+			}
 			result, err := cmd.Handler(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "command /%s error: %v\n", cmdName, err)
@@ -821,6 +830,12 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	}
 	execTool := makeToolExec(mcpMgr, mcpNames)
 
+	// Give user attachments session IDs so image_edit can reference them.
+	if tools.ImageGenAvailable() && !strings.Contains(query, "\n=== Video Overview") {
+		for _, img := range images {
+			query += fmt.Sprintf("\n[Attached image #%d]", tools.AddSessionImage(img.URL))
+		}
+	}
 	userMsg := Message{Role: "user", Content: query, Images: images, Videos: videos}
 	if strings.Contains(query, "\n=== Video Overview") {
 		userMsg.VideoFrames = true

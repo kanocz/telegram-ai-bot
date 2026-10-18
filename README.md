@@ -85,6 +85,19 @@ New format (with language):
 
 Generate a token in Home Assistant: Profile → Security → Long-lived access tokens → Create token.
 
+### thenoise.json — image generation (optional)
+
+```json
+{
+  "url": "http://localhost:8000"
+}
+```
+
+Points at a [TheNoise](https://github.com/lemonade-sdk/thenoise) server started with `thenoise.sh serve`. With this file present, the model gets two tools: `image_generate` (`POST /text2image`) and `image_edit` (`POST /edit`, needs an edit-capable model such as Qwen-Image-Edit or Flux.2 Klein). Attached images get IDs (`[Attached image #1]`) that `image_edit` takes as input. Telegram sends the result as a photo; the CLI saves it as `image-<time>-<id>.png` in the current directory.
+in the current directory.
+
+`/image <prompt>` skips the LLM and sends the prompt to TheNoise as is, with 1024×1024 and server defaults for the rest. With an attached photo, or as a reply to one, it calls `/edit` instead. CLI: `ai-webfetch "/image a fairy in flowers"` or `ai-webfetch -image photo.jpg "/image make the hair yellow"`.
+
 ### mcp.json — MCP servers (optional)
 
 ```json

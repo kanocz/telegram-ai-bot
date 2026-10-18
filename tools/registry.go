@@ -139,6 +139,7 @@ func All() []Definition {
 	hideImageSend := !ImageSenderAvailable()
 	hideMemory := !MemoryAvailable()
 	hideUserInfo := !UserInfoAvailable()
+	hideImageGen := !ImageGenAvailable()
 
 	defs := make([]Definition, 0, len(registry))
 	for _, t := range registry {
@@ -172,6 +173,9 @@ func All() []Definition {
 			continue
 		}
 		if hideUserInfo && strings.HasPrefix(name, "userinfo_") {
+			continue
+		}
+		if hideImageGen && strings.HasPrefix(name, "image_") {
 			continue
 		}
 		if !VideoAvailable() && name == "video_get_frames" {

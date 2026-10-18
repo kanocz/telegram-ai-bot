@@ -635,9 +635,14 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 	// Download photo if present
 	var images []ImageURL
-	if len(msg.Photo) > 0 {
+	photo := msg.Photo
+	// "/image <prompt>" as a reply to a photo edits that photo
+	if cmd, _ := parseCommandName(text); len(photo) == 0 && cmd == "image" && msg.ReplyToMessage != nil {
+		photo = msg.ReplyToMessage.Photo
+	}
+	if len(photo) > 0 {
 		// Telegram sends multiple sizes; last element is the largest
-		best := msg.Photo[len(msg.Photo)-1]
+		best := photo[len(photo)-1]
 		data, dlErr := downloadTelegramFile(token, best.FileID)
 		if dlErr != nil {
 			log.Printf("Error downloading photo for message %d: %v", msg.MessageID, dlErr)
@@ -795,6 +800,9 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 
 			// Store and send reply
 			storeMessage(chatID, msg.MessageID, "user", text, 0, nil, cmd.MCPServers)
+			if result == "" {
+				return // the command already replied (e.g. /image sent a photo)
+			}
 			sentMsgID, sendErr := sendBotReply(token, chatID, result, msg.MessageID)
 			if sendErr != nil {
 				log.Printf("Error sending command response to chat %d: %v", chatID, sendErr)

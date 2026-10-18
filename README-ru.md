@@ -86,6 +86,19 @@ Telegram бот и CLI-утилита: AI-ассистент с доступом
 
 Токен создаётся в Home Assistant: Профиль → Безопасность → Долгосрочные токены доступа → Создать токен.
 
+### thenoise.json — генерация изображений (опционально)
+
+```json
+{
+  "url": "http://localhost:8000"
+}
+```
+
+Адрес сервера [TheNoise](https://github.com/lemonade-sdk/thenoise), запущенного через `thenoise.sh serve`. Если файл есть, модель получает два инструмента: `image_generate` (`POST /text2image`) и `image_edit` (`POST /edit`, нужна модель с поддержкой редактирования, например Qwen-Image-Edit или Flux.2 Klein). Приложенные картинки получают ID (`[Attached image #1]`), по которым `image_edit` их берёт. В Telegram результат приходит фото, в CLI сохраняется в текущую директорию как `image-<время>-<id>.png`.
+как `image-<время>-<id>.png`.
+
+`/image <промпт>` обходит LLM и отправляет промпт в TheNoise как есть: 1024×1024, остальные параметры по умолчанию сервера. С приложенным фото или в ответ на фото вызывается `/edit`. В CLI: `ai-webfetch "/image фея в цветах"` или `ai-webfetch -image photo.jpg "/image поменяй цвет волос на жёлтый"`.
+
 ### mcp.json — MCP-серверы (опционально)
 
 ```json
