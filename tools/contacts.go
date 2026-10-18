@@ -407,10 +407,10 @@ func execContactsUpdate(rawArgs json.RawMessage) (string, error) {
 		card.SetValue(vcard.FieldName, args.Name+";;;;")
 	}
 	if args.Email != "" {
-		card[vcard.FieldEmail] = []*vcard.Field{{Value: args.Email}}
+		card[vcard.FieldEmail] = replaceFirstValue(card[vcard.FieldEmail], args.Email)
 	}
 	if args.Phone != "" {
-		card[vcard.FieldTelephone] = []*vcard.Field{{Value: args.Phone}}
+		card[vcard.FieldTelephone] = replaceFirstValue(card[vcard.FieldTelephone], args.Phone)
 	}
 	if args.Organization != "" {
 		card.SetValue(vcard.FieldOrganization, args.Organization)
@@ -425,6 +425,21 @@ func execContactsUpdate(rawArgs json.RawMessage) (string, error) {
 	}
 
 	return fmt.Sprintf("Contact updated: %s", updated.Path), nil
+}
+
+// replaceFirstValue overwrites the first field's value and keeps the rest.
+// Replacing the whole slice would silently drop a contact's other addresses
+// or numbers, and the model drives this tool with one value at a time.
+func replaceFirstValue(fields []*vcard.Field, value string) []*vcard.Field {
+	if len(fields) == 0 {
+		return []*vcard.Field{{Value: value}}
+	}
+	out := make([]*vcard.Field, len(fields))
+	copy(out, fields)
+	updated := *out[0] // copy so the params of the original are kept, not shared
+	updated.Value = value
+	out[0] = &updated
+	return out
 }
 
 func execContactsDelete(rawArgs json.RawMessage) (string, error) {
@@ -442,6 +457,12 @@ func execContactsDelete(rawArgs json.RawMessage) (string, error) {
 	}
 	if !cfg.Writable {
 		return "", fmt.Errorf("contacts are not writable")
+	}
+
+	// RemoveAll on a collection path would delete the whole address book, and
+	// the path comes from the model. Only an individual card may be removed.
+	if !strings.HasSuffix(strings.ToLower(args.Path), ".vcf") {
+		return "", fmt.Errorf("path %q is not a contact object (expected a path ending in .vcf from contacts_search)", args.Path)
 	}
 
 	client, err := dialCardDAV(cfg)
@@ -506,12 +527,12 @@ func init() {
 				Parameters: Parameters{
 					Type: "object",
 					Properties: map[string]Property{
-						"address_book":  {Type: "string", Description: "Address book path"},
-						"name":          {Type: "string", Description: "Contact full name"},
-						"email":         {Type: "string", Description: "Email address (optional)"},
-						"phone":         {Type: "string", Description: "Phone number (optional)"},
-						"organization":  {Type: "string", Description: "Organization/company (optional)"},
-						"note":          {Type: "string", Description: "Note (optional)"},
+						"address_book": {Type: "string", Description: "Address book path"},
+						"name":         {Type: "string", Description: "Contact full name"},
+						"email":        {Type: "string", Description: "Email address (optional)"},
+						"phone":        {Type: "string", Description: "Phone number (optional)"},
+						"organization": {Type: "string", Description: "Organization/company (optional)"},
+						"note":         {Type: "string", Description: "Note (optional)"},
 					},
 					Required: []string{"address_book", "name"},
 				},
@@ -529,12 +550,12 @@ func init() {
 				Parameters: Parameters{
 					Type: "object",
 					Properties: map[string]Property{
-						"path":          {Type: "string", Description: "Contact path (from contacts_search output)"},
-						"name":          {Type: "string", Description: "New full name"},
-						"email":         {Type: "string", Description: "New email address"},
-						"phone":         {Type: "string", Description: "New phone number"},
-						"organization":  {Type: "string", Description: "New organization"},
-						"note":          {Type: "string", Description: "New note"},
+						"path":         {Type: "string", Description: "Contact path (from contacts_search output)"},
+						"name":         {Type: "string", Description: "New full name"},
+						"email":        {Type: "string", Description: "New primary email address (replaces the first one, keeps any others)"},
+						"phone":        {Type: "string", Description: "New primary phone number (replaces the first one, keeps any others)"},
+						"organization": {Type: "string", Description: "New organization"},
+						"note":         {Type: "string", Description: "New note"},
 					},
 					Required: []string{"path"},
 				},

@@ -187,9 +187,20 @@ func executeVideoGetFrames(args json.RawMessage) (string, error) {
 		maxFrames = 60
 	}
 
+	duration := end - start
+	if duration <= 0 {
+		return "", fmt.Errorf("empty time range %s–%s", FormatTimestamp(start), FormatTimestamp(end))
+	}
+
 	frames, err := VideoFramesFn(vs.Path, start, end, maxFrames, frameWidth)
 	if err != nil {
 		return "", err
+	}
+	// ffmpeg can exit 0 and still write nothing, so this is reachable without
+	// an error. Indexing frames[0] here used to panic.
+	if len(frames) == 0 {
+		return "", fmt.Errorf("no frames extracted from %s to %s",
+			FormatTimestamp(start), FormatTimestamp(end))
 	}
 
 	// Set pending images and signal strip
@@ -201,7 +212,6 @@ func executeVideoGetFrames(args json.RawMessage) (string, error) {
 	SetVideoFrameStrip()
 
 	// Build result text
-	duration := end - start
 	fps := float64(len(frames)) / duration
 	result := fmt.Sprintf("Extracted %d frames from %s to %s (%.1fs, ~%.1f fps).\n",
 		len(frames), FormatTimestamp(start), FormatTimestamp(end), duration, fps)

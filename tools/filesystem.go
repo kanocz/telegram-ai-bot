@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,15 +14,17 @@ import (
 
 // RegisterFilesystem registers filesystem tools sandboxed to root.
 // If readWrite is true, write tools are also registered.
-func RegisterFilesystem(root string, readWrite bool) {
+// A root that cannot be resolved is a config error, usually a typo in
+// -filesystem, so it comes back as an error rather than a panic.
+func RegisterFilesystem(root string, readWrite bool) error {
 	// Resolve root to absolute + real path once at startup.
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		panic("filesystem: cannot resolve root: " + err.Error())
+		return fmt.Errorf("cannot resolve root %q: %w", root, err)
 	}
 	realRoot, err := filepath.EvalSymlinks(absRoot)
 	if err != nil {
-		panic("filesystem: cannot resolve root symlinks: " + err.Error())
+		return fmt.Errorf("cannot resolve root %q: %w", root, err)
 	}
 
 	safe := func(userPath string) (string, error) {
@@ -144,12 +147,11 @@ Reading a 200KB file wastes most of the available context and leaves no room for
 				}
 			}
 
-			buf := make([]byte, limit)
-			n, err := f.Read(buf)
-			if err != nil && n == 0 {
+			// A single Read may come back short, so drain up to the limit.
+			buf, err := io.ReadAll(io.LimitReader(f, int64(limit)))
+			if err != nil {
 				return "", err
 			}
-			buf = buf[:n]
 
 			// Reject binary: check first 8KB for NUL bytes.
 			check := buf
@@ -220,9 +222,9 @@ Example output:
 				Parameters: Parameters{
 					Type: "object",
 					Properties: map[string]Property{
-						"pattern": {Type: "string", Description: "Search pattern (plain text or regex depending on 'regex' flag)"},
-						"path":    {Type: "string", Description: "Directory or file to search in (relative to sandbox root, default: root)"},
-						"regex":   {Type: "boolean", Description: "Treat pattern as a regular expression (default: false, plain text substring match)"},
+						"pattern":     {Type: "string", Description: "Search pattern (plain text or regex depending on 'regex' flag)"},
+						"path":        {Type: "string", Description: "Directory or file to search in (relative to sandbox root, default: root)"},
+						"regex":       {Type: "boolean", Description: "Treat pattern as a regular expression (default: false, plain text substring match)"},
 						"ignore_case": {Type: "boolean", Description: "Case-insensitive search (default: false)"},
 						"include":     {Type: "string", Description: "Glob pattern to filter file names, e.g. '*.go' or '*.{js,ts}' (default: all files)"},
 						"context":     {Type: "integer", Description: "Number of context lines before and after each match (default: 0)"},
@@ -398,7 +400,7 @@ Example output:
 
 	// --- write tools ---
 	if !readWrite {
-		return
+		return nil
 	}
 
 	Register(&Tool{
@@ -598,6 +600,8 @@ Example output:
 			return fmt.Sprintf("removed %s", p.Path), nil
 		},
 	})
+
+	return nil
 }
 
 // readLines reads a range of lines from a text file, returning them with line numbers.
@@ -662,14 +666,17 @@ func safePath(root, userPath string) (string, error) {
 		return "", err
 	}
 
-	if real != root && !strings.HasPrefix(real, root+string(filepath.Separator)) {
+	if !withinRoot(root, real) {
 		return "", fmt.Errorf("path %q is outside sandbox", userPath)
 	}
 	return real, nil
 }
 
 // safeNewPath resolves a path for a new file/dir that may not exist yet.
-// It validates that the parent directory is within the sandbox.
+// It walks up to the nearest existing ancestor, resolves symlinks there, and
+// re-attaches the missing tail. Checking the unresolved string instead would
+// let "link/newdir/file" through whenever "newdir" is missing, and MkdirAll
+// would then follow "link" straight out of the sandbox.
 func safeNewPath(root, userPath string) (string, error) {
 	var abs string
 	if filepath.IsAbs(userPath) {
@@ -681,28 +688,43 @@ func safeNewPath(root, userPath string) (string, error) {
 	// Try resolving the full path first (file might already exist)
 	real, err := filepath.EvalSymlinks(abs)
 	if err == nil {
-		if real != root && !strings.HasPrefix(real, root+string(filepath.Separator)) {
+		if !withinRoot(root, real) {
 			return "", fmt.Errorf("path %q is outside sandbox", userPath)
 		}
 		return real, nil
 	}
 
-	// File doesn't exist: resolve parent directory
-	parent := filepath.Dir(abs)
-	realParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		// Parent doesn't exist either — check that the constructed path stays in root
-		cleaned := filepath.Clean(abs)
-		if cleaned != root && !strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
+	// Walk up to the nearest existing ancestor.
+	var missing []string
+	current := abs
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Reached the filesystem root without finding anything that exists.
 			return "", fmt.Errorf("path %q is outside sandbox", userPath)
 		}
-		return cleaned, nil
+		missing = append([]string{filepath.Base(current)}, missing...)
+		realParent, err := filepath.EvalSymlinks(parent)
+		if err == nil {
+			if !withinRoot(root, realParent) {
+				return "", fmt.Errorf("path %q is outside sandbox", userPath)
+			}
+			resolved := filepath.Join(append([]string{realParent}, missing...)...)
+			// Join cleans the result, so a ".." in the tail could still climb
+			// out of the resolved parent. Check the final string too.
+			if !withinRoot(root, resolved) {
+				return "", fmt.Errorf("path %q is outside sandbox", userPath)
+			}
+			return resolved, nil
+		}
+		current = parent
 	}
+}
 
-	if realParent != root && !strings.HasPrefix(realParent, root+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q is outside sandbox", userPath)
-	}
-	return filepath.Join(realParent, filepath.Base(abs)), nil
+// withinRoot reports whether an already symlink-resolved path is root itself
+// or sits under it.
+func withinRoot(root, resolved string) bool {
+	return resolved == root || strings.HasPrefix(resolved, root+string(filepath.Separator))
 }
 
 // applyUnifiedDiff applies a unified diff patch to the original content.

@@ -56,6 +56,7 @@ type UserContactsConfig struct {
 type UserConfig struct {
 	TelegramID int64               `json:"telegram_id"`
 	Language   string              `json:"language,omitempty"`
+	Timezone   string              `json:"timezone,omitempty"` // IANA name, e.g. "Europe/Prague"
 	Chats      UserChats           `json:"chats"`
 	Imap       *UserImapConfig     `json:"imap,omitempty"`
 	HA         *UserHAConfig       `json:"homeassistant,omitempty"`

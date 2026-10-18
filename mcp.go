@@ -28,13 +28,36 @@ type mcpTool struct {
 }
 
 // MCPServer represents a connection to a single MCP server.
+// The bot handles each message on its own goroutine, so mu guards every
+// mutable field: inited, sessionID and tools.
 type MCPServer struct {
-	name      string
-	cfg       MCPServerConfig
+	name string
+	cfg  MCPServerConfig
+
 	mu        sync.Mutex
 	inited    bool
 	sessionID string
 	tools     []mcpTool
+}
+
+// snapshot returns the initialization state and tool list under lock.
+// The tools slice is replaced wholesale, never mutated, so sharing it is safe.
+func (s *MCPServer) snapshot() (bool, []mcpTool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inited, s.tools
+}
+
+func (s *MCPServer) session() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionID
+}
+
+func (s *MCPServer) setSession(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionID = sessionID
 }
 
 // MCPManager manages multiple MCP servers.
@@ -66,7 +89,8 @@ func (m *MCPManager) InitEnabled(logf func(string, ...any)) {
 			if err := srv.initialize(); err != nil {
 				logf("MCP %s: init error: %v\n", name, err)
 			} else {
-				logf("MCP %s: %d tools\n", name, len(srv.tools))
+				_, srvTools := srv.snapshot()
+				logf("MCP %s: %d tools\n", name, len(srvTools))
 			}
 		}
 	}
@@ -111,7 +135,7 @@ func (m *MCPManager) serverNames() []string {
 func (m *MCPManager) ActiveToolDefs(extraNames []string, overrides map[string]bool) []tools.Definition {
 	active := map[string]bool{}
 	for name, srv := range m.servers {
-		if srv.cfg.Enabled && srv.inited {
+		if inited, _ := srv.snapshot(); srv.cfg.Enabled && inited {
 			active[name] = true
 		}
 	}
@@ -129,7 +153,10 @@ func (m *MCPManager) ActiveToolDefs(extraNames []string, overrides map[string]bo
 	// Initialize any servers that became active via overrides
 	for name := range active {
 		srv := m.servers[name]
-		if srv != nil && !srv.inited {
+		if srv == nil {
+			continue
+		}
+		if inited, _ := srv.snapshot(); !inited {
 			_ = srv.initialize()
 		}
 	}
@@ -137,10 +164,14 @@ func (m *MCPManager) ActiveToolDefs(extraNames []string, overrides map[string]bo
 	var defs []tools.Definition
 	for name := range active {
 		srv := m.servers[name]
-		if srv == nil || !srv.inited {
+		if srv == nil {
 			continue
 		}
-		for _, t := range srv.tools {
+		inited, srvTools := srv.snapshot()
+		if !inited {
+			continue
+		}
+		for _, t := range srvTools {
 			defs = append(defs, tools.Definition{
 				Type: "function",
 				Function: tools.Function{
@@ -209,9 +240,11 @@ func (s *MCPServer) initialize() error {
 		return nil
 	}
 
+	sessionID := s.sessionID
+
 	// Step 1: initialize
 	id1 := 1
-	initResp, err := s.rpcCall(&jsonRPCRequest{
+	initResp, sessionID, err := s.rpcCall(&jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      &id1,
 		Method:  "initialize",
@@ -223,7 +256,7 @@ func (s *MCPServer) initialize() error {
 				"version": "1.0.0",
 			},
 		},
-	})
+	}, sessionID)
 	if err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
@@ -235,15 +268,15 @@ func (s *MCPServer) initialize() error {
 	_ = s.rpcNotify(&jsonRPCRequest{
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
-	})
+	}, sessionID)
 
 	// Step 3: tools/list
 	id3 := 2
-	listResp, err := s.rpcCall(&jsonRPCRequest{
+	listResp, sessionID, err := s.rpcCall(&jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      &id3,
 		Method:  "tools/list",
-	})
+	}, sessionID)
 	if err != nil {
 		return fmt.Errorf("tools/list: %w", err)
 	}
@@ -258,14 +291,20 @@ func (s *MCPServer) initialize() error {
 		return fmt.Errorf("tools/list decode: %w", err)
 	}
 
+	s.sessionID = sessionID
 	s.tools = listResult.Tools
 	s.inited = true
 	return nil
 }
 
 func (s *MCPServer) callTool(toolName string, args json.RawMessage) (string, error) {
+	// The lock is not held across the request: several tool calls may be in
+	// flight for different users at once, and serializing them on the server
+	// struct would make one user's slow tool block everyone else's.
+	sessionID := s.session()
+
 	id := 1
-	resp, err := s.rpcCall(&jsonRPCRequest{
+	resp, newSessionID, err := s.rpcCall(&jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      &id,
 		Method:  "tools/call",
@@ -273,7 +312,10 @@ func (s *MCPServer) callTool(toolName string, args json.RawMessage) (string, err
 			"name":      toolName,
 			"arguments": json.RawMessage(args),
 		},
-	})
+	}, sessionID)
+	if newSessionID != sessionID {
+		s.setSession(newSessionID)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -305,12 +347,12 @@ func (s *MCPServer) callTool(toolName string, args json.RawMessage) (string, err
 	return result, nil
 }
 
-func (s *MCPServer) rpcCall(req *jsonRPCRequest) (*jsonRPCResponse, error) {
+// newRPCRequest builds the HTTP request for one JSON-RPC payload.
+func (s *MCPServer) newRPCRequest(req *jsonRPCRequest, sessionID string) (*http.Request, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-
 	httpReq, err := http.NewRequest("POST", s.cfg.URL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -320,58 +362,57 @@ func (s *MCPServer) rpcCall(req *jsonRPCRequest) (*jsonRPCResponse, error) {
 	for k, v := range s.cfg.Headers {
 		httpReq.Header.Set(k, v)
 	}
-	if s.sessionID != "" {
-		httpReq.Header.Set("Mcp-Session-Id", s.sessionID)
+	if sessionID != "" {
+		httpReq.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	return httpReq, nil
+}
+
+// rpcCall performs one JSON-RPC request. It reads and writes no shared state:
+// the caller passes the session id in and decides what to do with the one that
+// comes back, so concurrent tool calls cannot race on the server struct.
+func (s *MCPServer) rpcCall(req *jsonRPCRequest, sessionID string) (*jsonRPCResponse, string, error) {
+	httpReq, err := s.newRPCRequest(req, sessionID)
+	if err != nil {
+		return nil, sessionID, err
 	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, sessionID, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
+		return nil, sessionID, fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
 	}
 
-	// Save session ID
+	newSessionID := sessionID
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		s.sessionID = sid
+		newSessionID = sid
 	}
 
 	ct := resp.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "text/event-stream") {
-		return s.parseSSE(resp.Body)
+		rpcResp, err := s.parseSSE(resp.Body)
+		return rpcResp, newSessionID, err
 	}
 
 	var rpcResp jsonRPCResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return nil, newSessionID, fmt.Errorf("decode response: %w", err)
 	}
-	return &rpcResp, nil
+	return &rpcResp, newSessionID, nil
 }
 
-func (s *MCPServer) rpcNotify(req *jsonRPCRequest) error {
-	payload, err := json.Marshal(req)
+func (s *MCPServer) rpcNotify(req *jsonRPCRequest, sessionID string) error {
+	httpReq, err := s.newRPCRequest(req, sessionID)
 	if err != nil {
 		return err
 	}
 
-	httpReq, err := http.NewRequest("POST", s.cfg.URL, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	for k, v := range s.cfg.Headers {
-		httpReq.Header.Set(k, v)
-	}
-	if s.sessionID != "" {
-		httpReq.Header.Set("Mcp-Session-Id", s.sessionID)
-	}
-
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return err
 	}

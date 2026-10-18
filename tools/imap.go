@@ -60,6 +60,32 @@ func ImapAvailable() bool {
 	return ok
 }
 
+// toolPrompts holds the IMAP prompt texts for one session. The bot applies
+// each user's language to its own copy of the prompts, so these cannot live in
+// a single process-wide global the way they do for the one-shot CLI: an
+// English-speaking user would get whatever language the service started in.
+type toolPrompts struct {
+	Summarize string
+	Digest    string
+}
+
+var toolPromptOverrides sync.Map // goroutineID → toolPrompts
+
+// SetToolPrompts sets the IMAP prompts for the current goroutine.
+func SetToolPrompts(summarize, digest string) {
+	toolPromptOverrides.Store(goroutineID(), toolPrompts{Summarize: summarize, Digest: digest})
+}
+
+// ClearToolPrompts removes the prompts for the current goroutine.
+func ClearToolPrompts() { toolPromptOverrides.Delete(goroutineID()) }
+
+func sessionToolPrompts() toolPrompts {
+	if v, ok := toolPromptOverrides.Load(goroutineID()); ok {
+		return v.(toolPrompts)
+	}
+	return toolPrompts{Summarize: ImapSummarizePrompt, Digest: ImapDigestPrompt}
+}
+
 func getImapConfig() (*ImapUserConfig, error) {
 	if v, ok := imapOverrides.Load(goroutineID()); ok {
 		return v.(*ImapUserConfig), nil
@@ -339,13 +365,10 @@ func execListMessages(rawArgs json.RawMessage) (string, error) {
 		}
 	}
 
-	// Apply limit cap
-	if len(msgs) > args.Limit {
-		msgs = msgs[len(msgs)-args.Limit:]
-	}
-
 	// Client-side post-filtering on decoded envelope values
-	// (catches non-ASCII matches that IMAP SEARCH may miss)
+	// (catches non-ASCII matches that IMAP SEARCH may miss).
+	// This runs before the limit: trimming to the newest N first would hide
+	// every older match and report "no messages matching the criteria".
 	if args.From != "" {
 		filtered := msgs[:0]
 		for _, m := range msgs {
@@ -391,7 +414,17 @@ func execListMessages(rawArgs json.RawMessage) (string, error) {
 		return "No messages matching the criteria.", nil
 	}
 
+	// Keep the newest matches.
+	truncated := 0
+	if len(msgs) > args.Limit {
+		truncated = len(msgs) - args.Limit
+		msgs = msgs[truncated:]
+	}
+
 	var sb strings.Builder
+	if truncated > 0 {
+		sb.WriteString(fmt.Sprintf("(showing the %d most recent of %d matches)\n\n", args.Limit, args.Limit+truncated))
+	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		sb.WriteString(fmt.Sprintf("UID: %d\n", m.UID))
@@ -432,7 +465,13 @@ func fetchEmailContent(mailbox string, uid uint32) (*emailContent, error) {
 		return nil, err
 	}
 	defer c.Close()
+	return fetchEmailContentOn(c, mailbox, uid)
+}
 
+// fetchEmailContentOn is fetchEmailContent on an already-open client, so a
+// caller working through many messages pays for one TLS handshake and login
+// rather than one per message.
+func fetchEmailContentOn(c *imapclient.Client, mailbox string, uid uint32) (*emailContent, error) {
 	if _, err := c.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 		return nil, fmt.Errorf("SELECT %s failed: %w", mailbox, err)
 	}
@@ -633,7 +672,7 @@ func execSummarizeMessage(rawArgs json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	systemPrompt := ImapSummarizePrompt
+	systemPrompt := sessionToolPrompts().Summarize
 	if systemPrompt == "" {
 		systemPrompt = "Summarize the following email concisely in 2-3 sentences. Focus on the main topic, key information, and any action items. Respond in the same language as the email content."
 	}
@@ -665,7 +704,11 @@ func searchRelatedMessages(mailbox, participant string, sinceHours float64, limi
 		return nil, err
 	}
 	defer c.Close()
+	return searchRelatedMessagesOn(c, mailbox, participant, sinceHours, limit)
+}
 
+// searchRelatedMessagesOn is searchRelatedMessages on an already-open client.
+func searchRelatedMessagesOn(c *imapclient.Client, mailbox, participant string, sinceHours float64, limit int) ([]RelatedMsg, error) {
 	if _, err := c.Select(mailbox, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 		return nil, nil // mailbox doesn't exist — not an error, just no results
 	}
@@ -877,8 +920,6 @@ func FetchUnreadGrouped(cfg MailDigestConfig) ([]SenderGroup, error) {
 		})
 	}
 
-	c.Close() // done with envelope connection
-
 	progress(fmt.Sprintf("Сгруппировано в %d отправителей", len(groupOrder)))
 
 	// Per group: fetch email content + search history
@@ -894,9 +935,12 @@ func FetchUnreadGrouped(cfg MailDigestConfig) ([]SenderGroup, error) {
 
 		progress(fmt.Sprintf("  %s (%d писем)...", g.SenderName, len(emails)))
 
-		// Fetch full content for each email
+		// Fetch full content for each email. All of this runs on the one
+		// connection opened above: dialing per message meant a TLS handshake
+		// and LOGIN for every email plus two per sender, which servers
+		// rate-limit well before a busy inbox is done.
 		for i, e := range emails {
-			content, err := fetchEmailContent("INBOX", e.UID)
+			content, err := fetchEmailContentOn(c, "INBOX", e.UID)
 			if err != nil {
 				continue
 			}
@@ -911,8 +955,8 @@ func FetchUnreadGrouped(cfg MailDigestConfig) ([]SenderGroup, error) {
 		g.Emails = emails
 
 		// Search conversation history in INBOX + Sent
-		inboxMsgs, _ := searchRelatedMessages("INBOX", addr, cfg.ContextHours, 15)
-		sentMsgs, _ := searchRelatedMessages(cfg.SentMailbox, addr, cfg.ContextHours, 15)
+		inboxMsgs, _ := searchRelatedMessagesOn(c, "INBOX", addr, cfg.ContextHours, 15)
+		sentMsgs, _ := searchRelatedMessagesOn(c, cfg.SentMailbox, addr, cfg.ContextHours, 15)
 
 		// Dedup: exclude unread UIDs from inbox history
 		for _, r := range inboxMsgs {
@@ -991,7 +1035,7 @@ func execDigestMessage(rawArgs json.RawMessage) (string, error) {
 	}
 
 	// 3. Sub-agent analysis
-	systemPrompt := ImapDigestPrompt
+	systemPrompt := sessionToolPrompts().Digest
 	if systemPrompt == "" {
 		systemPrompt = `Analyze the email and its conversation history. Provide a structured response:
 

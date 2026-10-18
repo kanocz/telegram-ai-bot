@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"ai-webfetch/tools"
 )
@@ -114,12 +117,12 @@ type FuncCall struct {
 }
 
 type chatRequest struct {
-	Model             string             `json:"model"`
-	Messages          []Message          `json:"messages"`
-	Tools             []tools.Definition `json:"tools,omitempty"`
-	Stream            bool               `json:"stream"`
-	MaxTokens         int                `json:"max_tokens,omitempty"`
-	ChatTemplateKwargs map[string]any    `json:"chat_template_kwargs,omitempty"`
+	Model              string             `json:"model"`
+	Messages           []Message          `json:"messages"`
+	Tools              []tools.Definition `json:"tools,omitempty"`
+	Stream             bool               `json:"stream"`
+	MaxTokens          int                `json:"max_tokens,omitempty"`
+	ChatTemplateKwargs map[string]any     `json:"chat_template_kwargs,omitempty"`
 }
 
 type streamDelta struct {
@@ -156,6 +159,23 @@ type StreamResult struct {
 	Content   string
 	ToolCalls []ToolCall
 }
+
+// llmClient talks to the model. A long generation must not be cut off
+// mid-body, so the overall timeout stays off and only the connect and
+// response-header phases are bounded: a server that accepts the connection and
+// then goes silent still releases the caller.
+var llmClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+	},
+}
+
+// httpClient is for ordinary request/response APIs (Telegram, MCP).
+// http.DefaultClient has no timeout at all, so a hung peer would pin a bot
+// goroutine, its typing ticker and its per-goroutine tool state forever.
+var httpClient = &http.Client{Timeout: 2 * time.Minute}
 
 var requestDebug bool
 var quietMode bool
@@ -201,7 +221,7 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := llmClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -216,10 +236,22 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 	tcMap := map[int]*ToolCall{}
 	showThink := showThinking
 	filter := &thinkFilter{
-		writeThink:   func(s string) { if showThink { fmt.Fprint(os.Stderr, s) } },
+		writeThink: func(s string) {
+			if showThink {
+				fmt.Fprint(os.Stderr, s)
+			}
+		},
 		writeContent: func(s string) { fmt.Fprint(contentOut, s) },
-		onThinkStart: func() { if showThink { fmt.Fprint(os.Stderr, colorDim) } },
-		onThinkEnd:   func() { if showThink { fmt.Fprint(os.Stderr, colorReset+"\n") } },
+		onThinkStart: func() {
+			if showThink {
+				fmt.Fprint(os.Stderr, colorDim)
+			}
+		},
+		onThinkEnd: func() {
+			if showThink {
+				fmt.Fprint(os.Stderr, colorReset+"\n")
+			}
+		},
 	}
 	hadReasoning := false
 	reasoningDim := false
@@ -310,10 +342,15 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 		return nil, fmt.Errorf("stream read error: %w", err)
 	}
 
-	for i := 0; i < len(tcMap); i++ {
-		if tc, ok := tcMap[i]; ok {
-			result.ToolCalls = append(result.ToolCalls, *tc)
-		}
+	// Emit tool calls in index order. Walking 0..len-1 instead would silently
+	// drop every call whenever a backend numbers them from 1 or leaves a gap.
+	indices := make([]int, 0, len(tcMap))
+	for i := range tcMap {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+	for _, i := range indices {
+		result.ToolCalls = append(result.ToolCalls, *tcMap[i])
 	}
 
 	// If no API tool calls, try parsing from text (reasoning + content)
@@ -574,7 +611,7 @@ func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit i
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := llmClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -741,7 +778,7 @@ func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := llmClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}

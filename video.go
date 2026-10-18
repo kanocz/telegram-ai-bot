@@ -104,6 +104,11 @@ func extractFrames(videoPath string, maxFrames, frameWidth int) ([]VideoFrame, f
 			DataURI:   "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data),
 		})
 	}
+	// ffmpeg sometimes exits 0 without writing anything. Reporting that here
+	// keeps every caller from having to guard its own division by len(frames).
+	if len(frames) == 0 {
+		return nil, duration, fmt.Errorf("ffmpeg produced no frames for %s", videoPath)
+	}
 
 	return frames, duration, nil
 }
@@ -167,6 +172,9 @@ func extractFramesRange(videoPath string, startSec, endSec float64, maxFrames, f
 			Timestamp: startSec + float64(i-1)*interval,
 			DataURI:   "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data),
 		})
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("ffmpeg produced no frames for %.1f–%.1f", startSec, endSec)
 	}
 
 	return frames, nil

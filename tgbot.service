@@ -5,6 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Fallback zone for users without "timezone" in users.json. Without it the
+# service inherits the host zone, which on a server is usually UTC, and every
+# time the bot shows or stamps is off by the user's offset.
+Environment=TZ=Europe/Prague
 # Mox starts as root, but drops privileges after binding network addresses.
 WorkingDirectory=/opt/tgbot
 ExecStart=/opt/tgbot/tgbot -telegram-bot -verbose-tools -show-subagents serve

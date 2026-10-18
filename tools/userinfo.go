@@ -76,7 +76,7 @@ func writeUserInfoAll(path string, all map[string]map[string]UserInfoEntry) erro
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return writeFileAtomic(path, append(data, '\n'), 0o644)
 }
 
 // userInfoGet returns entries for the current user.

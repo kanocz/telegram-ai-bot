@@ -108,7 +108,36 @@ func saveMemoryData(dir string, store *memoryData) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "memory.json"), data, 0644)
+	return writeFileAtomic(filepath.Join(dir, "memory.json"), data, 0644)
+}
+
+// writeFileAtomic writes to a temp file in the same directory and renames it
+// into place. Writing over the target directly would leave truncated JSON if
+// the process died mid-write, and the whole store would then fail to parse.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename succeeds
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // --- Tool registration ---

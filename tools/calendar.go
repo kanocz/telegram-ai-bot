@@ -502,9 +502,14 @@ func execCalCreateEvent(rawArgs json.RawMessage) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid start: %w", err)
 	}
-	endTime, _, err := parseEventTime(args.End)
+	endTime, endAllDay, err := parseEventTime(args.End)
 	if err != nil {
 		return "", fmt.Errorf("invalid end: %w", err)
+	}
+	// Writing one as a DATE and the other as a DATE-TIME silently drops the
+	// time of day, so both ends have to agree on which they are.
+	if allDay != endAllDay {
+		return "", fmt.Errorf("start and end must both be dates (YYYY-MM-DD) or both be timestamps (RFC3339), got %q and %q", args.Start, args.End)
 	}
 
 	uid := fmt.Sprintf("%d-%d@ai-webfetch", time.Now().UnixNano(), goroutineID())
@@ -646,6 +651,12 @@ func execCalDeleteEvent(rawArgs json.RawMessage) (string, error) {
 	}
 	if cfg.Server == "" || !cfg.Writable {
 		return "", fmt.Errorf("calendar is not writable")
+	}
+
+	// RemoveAll on a collection path would delete the whole calendar, and the
+	// path comes from the model. Only an individual object may be removed.
+	if !strings.HasSuffix(strings.ToLower(args.Path), ".ics") {
+		return "", fmt.Errorf("path %q is not an event object (expected a path ending in .ics from cal_events)", args.Path)
 	}
 
 	client, err := dialCalDAV(cfg)

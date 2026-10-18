@@ -13,14 +13,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const telegramMaxLen = 4096
 
 type botConfig struct {
-	WebhookURL         string `json:"webhook_url"`
-	Listen             string `json:"listen"`
-	AllowUnregistered  bool   `json:"allow_unregistered_users"`
+	WebhookURL        string `json:"webhook_url"`
+	Listen            string `json:"listen"`
+	AllowUnregistered bool   `json:"allow_unregistered_users"`
 }
 
 type telegramConfig struct {
@@ -60,7 +61,7 @@ func sendTelegramChunk(token string, chatID int64, text, parseMode string, reply
 		vals.Set("reply_to_message_id", strconv.FormatInt(replyToMsgID, 10))
 	}
 
-	resp, err := http.PostForm(apiURL, vals)
+	resp, err := httpClient.PostForm(apiURL, vals)
 	if err != nil {
 		return 0, fmt.Errorf("request failed: %w", err)
 	}
@@ -133,7 +134,7 @@ func sendPhotoDataURI(token string, chatID int64, dataURI, caption string, reply
 	_ = writer.Close()
 
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", token)
-	resp, err := http.Post(apiURL, writer.FormDataContentType(), &buf)
+	resp, err := httpClient.Post(apiURL, writer.FormDataContentType(), &buf)
 	if err != nil {
 		return 0, fmt.Errorf("sendPhoto request: %w", err)
 	}
@@ -156,60 +157,54 @@ func sendPhotoDataURI(token string, chatID int64, dataURI, caption string, reply
 	return result.Result.MessageID, nil
 }
 
-// sendToChat sends text to a single chat with markdown→HTML conversion + splitting.
-// Falls back to plain text if HTML parsing fails.
-func sendToChat(token string, chatID int64, text string) error {
-	html := markdownToTelegramHTML(text)
-	chunks := splitTelegramMessage(html)
-	for _, chunk := range chunks {
-		if _, err := sendTelegramChunk(token, chatID, chunk, "HTML", 0); err != nil {
-			// Fallback: send as plain text
-			plain := splitTelegramMessage(text)
-			for j, p := range plain {
-				if _, err2 := sendTelegramChunk(token, chatID, p, "", 0); err2 != nil {
-					return fmt.Errorf("chunk %d/%d (plain fallback): %w", j+1, len(plain), err2)
-				}
-			}
-			return nil
-		}
-	}
-	return nil
-}
-
-// sendBotReply sends text as a reply to replyToMsgID and returns the first sent message ID.
-func sendBotReply(token string, chatID int64, text string, replyToMsgID int64) (int64, error) {
-	html := markdownToTelegramHTML(text)
-	chunks := splitTelegramMessage(html)
+// sendTelegramText splits text, converts each chunk from markdown to HTML and
+// sends it. Splitting happens before conversion so an opening tag and its
+// closing tag always land in the same chunk. A chunk Telegram refuses to parse
+// is re-sent on its own as plain text; re-sending the whole message, as this
+// used to, delivered every earlier chunk a second time.
+// replyToMsgID, when non-zero, makes the first chunk a reply.
+// Returns the message_id of the first chunk sent.
+func sendTelegramText(token string, chatID int64, text string, replyToMsgID int64) (int64, error) {
 	var firstMsgID int64
+	chunks := splitTelegramMessage(text)
 	for i, chunk := range chunks {
 		replyID := int64(0)
 		if i == 0 {
 			replyID = replyToMsgID
 		}
-		msgID, err := sendTelegramChunk(token, chatID, chunk, "HTML", replyID)
-		if err != nil {
-			// Fallback: send as plain text
-			plain := splitTelegramMessage(text)
-			for j, p := range plain {
-				rid := int64(0)
-				if j == 0 && firstMsgID == 0 {
-					rid = replyToMsgID
-				}
-				mid, err2 := sendTelegramChunk(token, chatID, p, "", rid)
-				if err2 != nil {
-					return 0, fmt.Errorf("chunk %d/%d (plain fallback): %w", j+1, len(plain), err2)
-				}
-				if firstMsgID == 0 {
-					firstMsgID = mid
-				}
-			}
-			return firstMsgID, nil
+
+		var msgID int64
+		var err error
+		if html := markdownToTelegramHTML(chunk); len(html) <= telegramMaxLen {
+			msgID, err = sendTelegramChunk(token, chatID, html, "HTML", replyID)
+		} else {
+			// Conversion outgrew the limit; the HTML attempt would only be
+			// rejected, so go straight to plain text.
+			err = fmt.Errorf("converted chunk too long")
 		}
+		if err != nil {
+			msgID, err = sendTelegramChunk(token, chatID, chunk, "", replyID)
+			if err != nil {
+				return firstMsgID, fmt.Errorf("chunk %d/%d: %w", i+1, len(chunks), err)
+			}
+		}
+
 		if firstMsgID == 0 {
 			firstMsgID = msgID
 		}
 	}
 	return firstMsgID, nil
+}
+
+// sendToChat sends text to a single chat with markdown→HTML conversion + splitting.
+func sendToChat(token string, chatID int64, text string) error {
+	_, err := sendTelegramText(token, chatID, text, 0)
+	return err
+}
+
+// sendBotReply sends text as a reply to replyToMsgID and returns the first sent message ID.
+func sendBotReply(token string, chatID int64, text string, replyToMsgID int64) (int64, error) {
+	return sendTelegramText(token, chatID, text, replyToMsgID)
 }
 
 // sendToChats sends text to multiple chats.
@@ -237,7 +232,7 @@ func sendMessageWithKeyboard(token string, chatID int64, text string, keyboard a
 		"reply_markup": {string(replyMarkup)},
 	}
 
-	resp, err := http.PostForm(apiURL, vals)
+	resp, err := httpClient.PostForm(apiURL, vals)
 	if err != nil {
 		return 0, fmt.Errorf("request failed: %w", err)
 	}
@@ -267,7 +262,7 @@ func answerCallbackQuery(token, callbackQueryID string) error {
 	vals := url.Values{
 		"callback_query_id": {callbackQueryID},
 	}
-	resp, err := http.PostForm(apiURL, vals)
+	resp, err := httpClient.PostForm(apiURL, vals)
 	if err != nil {
 		return fmt.Errorf("answerCallbackQuery: %w", err)
 	}
@@ -282,7 +277,7 @@ func sendTypingAction(token string, chatID int64) error {
 		"chat_id": {strconv.FormatInt(chatID, 10)},
 		"action":  {"typing"},
 	}
-	resp, err := http.PostForm(apiURL, vals)
+	resp, err := httpClient.PostForm(apiURL, vals)
 	if err != nil {
 		return err
 	}
@@ -370,29 +365,44 @@ var (
 	reItalic     = regexp.MustCompile(`(^|[^*])\*([^*]+?)\*`)
 )
 
+// telegramSplitBudget is the byte budget for one markdown chunk. Converting
+// markdown to HTML only grows the text (escaping, tags), so the budget sits
+// below telegramMaxLen to leave room. Bytes are a safe proxy for Telegram's
+// limit: a string is never longer in UTF-16 code units than it is in bytes.
+const telegramSplitBudget = 3000
+
 func splitTelegramMessage(text string) []string {
-	if len(text) <= telegramMaxLen {
+	if len(text) <= telegramSplitBudget {
 		return []string{text}
 	}
 
 	var chunks []string
-	for len(text) > 0 {
-		if len(text) <= telegramMaxLen {
-			chunks = append(chunks, text)
-			break
-		}
-
-		// Find last newline before the limit
-		cut := telegramMaxLen
-		for i := cut - 1; i > 0; i-- {
-			if text[i] == '\n' {
-				cut = i + 1 // include the newline in current chunk
-				break
-			}
-		}
-
+	for len(text) > telegramSplitBudget {
+		cut := telegramCutPoint(text)
 		chunks = append(chunks, text[:cut])
 		text = text[cut:]
 	}
+	if text != "" {
+		chunks = append(chunks, text)
+	}
 	return chunks
+}
+
+// telegramCutPoint picks where to break a chunk: the last newline in the
+// window, else the last space, else the nearest rune boundary. Cutting on a
+// raw byte splits a multi-byte character, and Telegram rejects invalid UTF-8.
+// For Cyrillic text that happens on any long run without a newline.
+func telegramCutPoint(s string) int {
+	window := s[:telegramSplitBudget]
+	if i := strings.LastIndexByte(window, '\n'); i > 0 {
+		return i + 1 // include the newline in the current chunk
+	}
+	if i := strings.LastIndexByte(window, ' '); i > 0 {
+		return i + 1
+	}
+	cut := telegramSplitBudget
+	for cut > 1 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return cut
 }

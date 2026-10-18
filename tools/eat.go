@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -18,38 +19,16 @@ func init() {
 	})
 }
 
-// nutriLocation returns the user's configured time zone for nutricalc,
-// falling back to the process local zone. The bot service often runs in UTC
-// while the user lives elsewhere, so relying on time.Now() alone would stamp
-// meals with the wrong offset. Configure via userinfo: a module setting
-// "nutricalc_timezone" (only_for "eat") or a global "timezone"/"tz", e.g.
-// "Europe/Prague".
-func nutriLocation() *time.Location {
-	if cfg := getUserInfoConfig(); cfg != nil {
-		if entries, err := userInfoGet(cfg); err == nil {
-			for _, key := range []string{"nutricalc_timezone", "timezone", "tz"} {
-				if e, ok := entries[key]; ok && e.Value != "" {
-					if loc, err := time.LoadLocation(e.Value); err == nil {
-						return loc
-					}
-				}
-			}
-		}
-	}
-	return time.Local
-}
+// nutriTimestampLayout matches what the nutricalc Flutter client writes:
+// DateTime.toIso8601String() on a local DateTime, which carries no zone.
+// Dart's DateTime.parse reads a zoneless value back as local time, so entries
+// written this way sort and group alongside the app's own entries. Sending an
+// offset instead (19:20+02:00) makes Dart convert to UTC and display 17:20.
+const nutriTimestampLayout = "2006-01-02T15:04:05.000"
 
-// nutriTimestamp returns an RFC3339 timestamp that makes the nutricalc UI show
-// the user's local wall-clock time. The server requires RFC3339 (it rejects a
-// naive timestamp) but its UI renders the stored instant in UTC — so sending
-// the real local offset (e.g. 19:20+02:00) displays as 17:20. We therefore
-// take the user's local wall clock and label it as UTC (19:20Z), which the UI
-// then renders as 19:20.
+// nutriTimestamp returns the user's current wall clock in that format.
 func nutriTimestamp() string {
-	now := time.Now().In(nutriLocation())
-	wall := time.Date(now.Year(), now.Month(), now.Day(),
-		now.Hour(), now.Minute(), now.Second(), 0, time.UTC)
-	return wall.Format(time.RFC3339)
+	return time.Now().In(Location()).Format(nutriTimestampLayout)
 }
 
 // --- Data types ---
@@ -123,7 +102,7 @@ func handleEat(ctx *CommandContext) (string, error) {
 	}
 
 	text := strings.TrimSpace(ctx.Text)
-	today := time.Now().In(nutriLocation()).Format("2006-01-02")
+	today := time.Now().In(Location()).Format("2006-01-02")
 
 	// Step 1: Determine mode
 	switch {
@@ -463,13 +442,27 @@ func handleLabelNoWeight(name string, per100g macros, username, date string) (st
 // --- Process a single eat item ---
 
 func processEatItem(item eatItem, username, date string) (string, error) {
+	return processEatItemDepth(item, username, date, 0)
+}
+
+// processEatItemDepth carries a recursion depth. Adding a product to the
+// catalog re-runs the search for it, and if the catalog does not return the
+// new product (a name mismatch, or the write not visible yet) the flow would
+// otherwise offer to add it again, forever.
+func processEatItemDepth(item eatItem, username, date string, depth int) (string, error) {
 	// Search catalog
 	match, err := findCatalogMatch(item.Name, item.Unit)
+	if errors.Is(err, errSkipped) {
+		return fmt.Sprintf("%s: пропущен", item.Name), nil
+	}
 	if err != nil {
 		return "", err
 	}
 
 	if match == nil {
+		if depth > 0 {
+			return "", fmt.Errorf("'%s' добавлен в каталог, но поиск его не находит", item.Name)
+		}
 		// No match — offer to add or skip
 		if AskAvailable() {
 			answer, askErr := GetPrompter().Ask(UserQuestion{
@@ -486,7 +479,7 @@ func processEatItem(item eatItem, username, date string) (string, error) {
 				return fmt.Sprintf("%s: пропущен", item.Name), nil
 			}
 			// Estimate macros via AI and add to catalog
-			return handleAddToCatalog(item, username, date)
+			return handleAddToCatalog(item, username, date, depth+1)
 		}
 		return "", fmt.Errorf("'%s' не найден в каталоге", item.Name)
 	}
@@ -613,6 +606,11 @@ func askServingOrWeight(match *catalogItem) (*catalogServing, float64, error) {
 
 // --- Catalog search cascade ---
 
+// errSkipped reports that the user chose "Пропустить". It ends the search
+// cascade: without it, a skip just produced a nil match and the next step
+// asked about the very same product again.
+var errSkipped = errors.New("skipped by user")
+
 func findCatalogMatch(name, userUnit string) (*catalogItem, error) {
 	// Load full catalog upfront — we need complete serving data (with quantity/unit)
 	// that catalog_search doesn't return.
@@ -626,7 +624,10 @@ func findCatalogMatch(name, userUnit string) (*catalogItem, error) {
 	if err == nil {
 		var sr catalogSearchResult
 		if json.Unmarshal([]byte(searchResult), &sr) == nil && len(sr.Results) > 0 {
-			picked := pickSearchResult(sr.Results, userUnit)
+			picked, pickErr := pickSearchResult(sr.Results, userUnit)
+			if pickErr != nil {
+				return nil, pickErr
+			}
 			if picked != nil {
 				return enrichFromCatalog(picked, catalog), nil
 			}
@@ -643,7 +644,10 @@ func findCatalogMatch(name, userUnit string) (*catalogItem, error) {
 		if err == nil {
 			var sr catalogSearchResult
 			if json.Unmarshal([]byte(searchResult), &sr) == nil && len(sr.Results) > 0 {
-				picked := pickSearchResult(sr.Results, userUnit)
+				picked, pickErr := pickSearchResult(sr.Results, userUnit)
+				if pickErr != nil {
+					return nil, pickErr
+				}
 				if picked != nil {
 					return enrichFromCatalog(picked, catalog), nil
 				}
@@ -723,7 +727,7 @@ func enrichFromCatalog(item *catalogItem, catalog map[string]catalogItem) *catal
 // servings) and asks only when there are truly different products.
 // When the user specified a unit (г, мл, шт), auto-selects the matching
 // serving variant instead of prompting.
-func pickSearchResult(results []catalogSearchMatch, userUnit string) *catalogItem {
+func pickSearchResult(results []catalogSearchMatch, userUnit string) (*catalogItem, error) {
 	// Group results by item ID
 	type group struct {
 		first   catalogSearchMatch
@@ -756,13 +760,12 @@ func pickSearchResult(results []catalogSearchMatch, userUnit string) *catalogIte
 	}
 
 	if len(unique) == 1 {
-		return searchResultToItem(unique[0])
+		return searchResultToItem(unique[0]), nil
 	}
 	if AskAvailable() {
-		item, _ := askUserToPickResult(unique)
-		return item
+		return askUserToPickResult(unique)
 	}
-	return searchResultToItem(unique[0])
+	return searchResultToItem(unique[0]), nil
 }
 
 // autoSelectServing picks the best serving variant from same-product results
@@ -824,7 +827,7 @@ func askUserToPickResult(results []catalogSearchMatch) (*catalogItem, error) {
 		return nil, err
 	}
 	if answer == "Пропустить" {
-		return nil, nil
+		return nil, errSkipped
 	}
 
 	// Match answer to result
@@ -861,7 +864,7 @@ func askUserToPickCatalogItem(items []catalogItem) (*catalogItem, error) {
 		return nil, err
 	}
 	if answer == "Пропустить" {
-		return nil, nil
+		return nil, errSkipped
 	}
 
 	for i, opt := range options {
@@ -932,7 +935,7 @@ func calculateQuantity(item eatItem, serving catalogServing) float64 {
 
 // --- Add to catalog (AI-estimated macros) ---
 
-func handleAddToCatalog(item eatItem, username, date string) (string, error) {
+func handleAddToCatalog(item eatItem, username, date string, depth int) (string, error) {
 	m, err := estimateMacrosWithConfirm(item.Name)
 	if err != nil {
 		return "", err
@@ -944,7 +947,7 @@ func handleAddToCatalog(item eatItem, username, date string) (string, error) {
 	}
 
 	// Now search for the newly added item and log it
-	return processEatItem(item, username, date)
+	return processEatItemDepth(item, username, date, depth)
 }
 
 // handleCatalogAdd processes a multi-line catalog-add input.

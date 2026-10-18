@@ -59,16 +59,16 @@ type TGDocument struct {
 }
 
 type TGMessage struct {
-	MessageID int64         `json:"message_id"`
-	From      *TGUser       `json:"from,omitempty"`
-	Chat      TGChat        `json:"chat"`
-	Date      int64         `json:"date"`
-	Text      string        `json:"text,omitempty"`
-	Photo     []TGPhotoSize `json:"photo,omitempty"`
-	Video     *TGVideo      `json:"video,omitempty"`
-	VideoNote *TGVideo      `json:"video_note,omitempty"`
-	Animation *TGVideo      `json:"animation,omitempty"`
-	Document  *TGDocument   `json:"document,omitempty"`
+	MessageID      int64         `json:"message_id"`
+	From           *TGUser       `json:"from,omitempty"`
+	Chat           TGChat        `json:"chat"`
+	Date           int64         `json:"date"`
+	Text           string        `json:"text,omitempty"`
+	Photo          []TGPhotoSize `json:"photo,omitempty"`
+	Video          *TGVideo      `json:"video,omitempty"`
+	VideoNote      *TGVideo      `json:"video_note,omitempty"`
+	Animation      *TGVideo      `json:"animation,omitempty"`
+	Document       *TGDocument   `json:"document,omitempty"`
 	Caption        string        `json:"caption,omitempty"`
 	ReplyToMessage *TGMessage    `json:"reply_to_message,omitempty"`
 }
@@ -121,15 +121,50 @@ type Update struct {
 
 // Pending questions: keyboard-based (keyed by message_id) and free-text (keyed by chatID).
 
+// pendingQuestionTTL bounds how long ask_user waits. A question nobody answers
+// otherwise pins its goroutine, its typing ticker and its per-goroutine tool
+// state (prompter, IMAP, memory) for the life of the process.
+const pendingQuestionTTL = time.Hour
+
 type pendingQuestion struct {
-	ChatID   int64
-	Options  []tools.UserOption
-	ResultCh chan string
+	ChatID    int64
+	Options   []tools.UserOption
+	ResultCh  chan string
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+func newPendingQuestion(chatID int64, options []tools.UserOption) *pendingQuestion {
+	return &pendingQuestion{
+		ChatID:    chatID,
+		Options:   options,
+		ResultCh:  make(chan string, 1),
+		cancelled: make(chan struct{}),
+	}
+}
+
+// abandon releases a waiter that will never receive an answer.
+func (pq *pendingQuestion) abandon() {
+	pq.once.Do(func() { close(pq.cancelled) })
+}
+
+// await blocks until the user answers, the question is superseded, or the TTL
+// runs out. unregister drops the question from its registry on timeout.
+func (pq *pendingQuestion) await(unregister func()) (string, error) {
+	select {
+	case answer := <-pq.ResultCh:
+		return answer, nil
+	case <-pq.cancelled:
+		return "", fmt.Errorf("question replaced by a newer one")
+	case <-time.After(pendingQuestionTTL):
+		unregister()
+		return "", fmt.Errorf("no answer within %s", pendingQuestionTTL)
+	}
 }
 
 var (
-	pendingKeyboardQuestions   sync.Map // message_id (int64) -> *pendingQuestion
-	pendingTextQuestions       sync.Map // chatID (int64) -> *pendingQuestion
+	pendingKeyboardQuestions sync.Map // message_id (int64) -> *pendingQuestion
+	pendingTextQuestions     sync.Map // chatID (int64) -> *pendingQuestion
 )
 
 func registerKeyboardQuestion(msgID int64, pq *pendingQuestion) {
@@ -144,16 +179,29 @@ func resolveKeyboardQuestion(msgID int64) *pendingQuestion {
 	return v.(*pendingQuestion)
 }
 
+// registerTextQuestion records the free-text question awaiting a reply in this
+// chat. Only one can be answered at a time, so an older one is released rather
+// than left blocked.
 func registerTextQuestion(chatID int64, pq *pendingQuestion) {
-	pendingTextQuestions.Store(chatID, pq)
+	if prev, loaded := pendingTextQuestions.Swap(chatID, pq); loaded {
+		prev.(*pendingQuestion).abandon()
+	}
 }
 
-func resolveTextQuestion(chatID int64) *pendingQuestion {
+// answerTextQuestion hands text to the chat's pending free-text question and
+// reports whether it was consumed. Empty text leaves the question registered:
+// taking it out regardless (the user replying with a photo, say) used to drop
+// the question and block the asking goroutine permanently.
+func answerTextQuestion(chatID int64, text string) bool {
+	if text == "" {
+		return false
+	}
 	v, ok := pendingTextQuestions.LoadAndDelete(chatID)
 	if !ok {
-		return nil
+		return false
 	}
-	return v.(*pendingQuestion)
+	v.(*pendingQuestion).ResultCh <- text
+	return true
 }
 
 // TelegramImageSender implements tools.ImageSender for Telegram bot sessions.
@@ -199,16 +247,13 @@ func (p *TelegramPrompter) Ask(q tools.UserQuestion) (string, error) {
 			return "", fmt.Errorf("send keyboard: %w", err)
 		}
 
-		pq := &pendingQuestion{
-			ChatID:   p.ChatID,
-			Options:  q.Options,
-			ResultCh: make(chan string, 1),
-		}
+		pq := newPendingQuestion(p.ChatID, q.Options)
 		registerKeyboardQuestion(msgID, pq)
 
-		// Block until user presses a button (no timeout — user may answer hours later)
-		answer := <-pq.ResultCh
-		return answer, nil
+		// Wait for a button press. The user may take hours, so the TTL is long.
+		return pq.await(func() {
+			pendingKeyboardQuestions.CompareAndDelete(msgID, pq)
+		})
 	}
 
 	// No options: send as regular message and wait for text reply
@@ -217,14 +262,12 @@ func (p *TelegramPrompter) Ask(q tools.UserQuestion) (string, error) {
 		return "", fmt.Errorf("send question: %w", err)
 	}
 
-	pq := &pendingQuestion{
-		ChatID:   p.ChatID,
-		ResultCh: make(chan string, 1),
-	}
+	pq := newPendingQuestion(p.ChatID, nil)
 	registerTextQuestion(p.ChatID, pq)
 
-	answer := <-pq.ResultCh
-	return answer, nil
+	return pq.await(func() {
+		pendingTextQuestions.CompareAndDelete(p.ChatID, pq)
+	})
 }
 
 func handleCallbackQuery(token string, cq *TGCallbackQuery) {
@@ -255,7 +298,7 @@ func handleCallbackQuery(token string, cq *TGCallbackQuery) {
 func setWebhook(token, webhookURL string) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", token)
 	vals := url.Values{"url": {webhookURL}}
-	resp, err := http.PostForm(apiURL, vals)
+	resp, err := httpClient.PostForm(apiURL, vals)
 	if err != nil {
 		return fmt.Errorf("setWebhook request failed: %w", err)
 	}
@@ -277,7 +320,7 @@ func setWebhook(token, webhookURL string) error {
 
 func deleteWebhook(token string) error {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", token)
-	resp, err := http.PostForm(apiURL, url.Values{})
+	resp, err := httpClient.PostForm(apiURL, url.Values{})
 	if err != nil {
 		return fmt.Errorf("deleteWebhook request failed: %w", err)
 	}
@@ -320,7 +363,7 @@ func startTyping(token string, chatID int64) (cancel func()) {
 func downloadTelegramFile(token, fileID string) ([]byte, error) {
 	// Step 1: getFile to obtain file_path
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, url.QueryEscape(fileID))
-	resp, err := http.Get(apiURL)
+	resp, err := httpClient.Get(apiURL)
 	if err != nil {
 		return nil, fmt.Errorf("getFile request: %w", err)
 	}
@@ -341,7 +384,7 @@ func downloadTelegramFile(token, fileID string) ([]byte, error) {
 
 	// Step 2: download the file
 	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, result.Result.FilePath)
-	fileResp, err := http.Get(fileURL)
+	fileResp, err := httpClient.Get(fileURL)
 	if err != nil {
 		return nil, fmt.Errorf("download file: %w", err)
 	}
@@ -417,8 +460,8 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		msg := update.Message
 		if msg == nil || (msg.Text == "" && len(msg.Photo) == 0 && !msg.hasVideo()) {
 			if requestDebug && msg != nil {
-				log.Printf("Message filtered out: text=%q photo=%d video=%v anim=%v doc=%v",
-					msg.Text, len(msg.Photo), msg.Video != nil, msg.Animation != nil, msg.Document != nil)
+				log.Printf("Message filtered out: text=%q photo=%d video=%v anim=%v doc=%v from=%v",
+					msg.Text, len(msg.Photo), msg.Video != nil, msg.Animation != nil, msg.Document != nil, msg.From != nil)
 			}
 			return
 		}
@@ -436,19 +479,20 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 			}
 		}
 
-		// Access control
-		if user == nil && !botCfg.AllowUnregistered {
-			log.Printf("Rejected message from unregistered user %d (%s)",
-				msg.From.ID, msg.From.Username)
-			return
-		}
-
+		// Access control. msg.From is absent for channel posts and anonymous
+		// group admins, so it is never dereferenced without a check: a panic
+		// here aborts the webhook response and Telegram redelivers the same
+		// update forever.
 		userLabel := "unknown"
 		if msg.From != nil {
 			userLabel = msg.From.FirstName
 			if msg.From.Username != "" {
 				userLabel += " @" + msg.From.Username
 			}
+		}
+		if user == nil && !botCfg.AllowUnregistered {
+			log.Printf("Rejected message from unregistered sender %s (chat %d)", userLabel, msg.Chat.ID)
+			return
 		}
 		logText := msg.Text
 		if logText == "" && len(msg.Photo) > 0 {
@@ -460,8 +504,7 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		log.Printf("Message from %s (chat %d): %s", userLabel, msg.Chat.ID, truncate(logText, 100))
 
 		// Check if there's a pending text question for this chat — route answer there
-		if pq := resolveTextQuestion(msg.Chat.ID); pq != nil && msg.Text != "" {
-			pq.ResultCh <- strings.TrimSpace(msg.Text)
+		if answerTextQuestion(msg.Chat.ID, strings.TrimSpace(msg.Text)) {
 			return
 		}
 
@@ -539,6 +582,13 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 			tools.SetUserInfoOverride(user.Userinfo, userName)
 			defer tools.ClearUserInfoOverride()
 		}
+		if user.Timezone != "" {
+			if tzErr := tools.SetTimezone(user.Timezone); tzErr != nil {
+				log.Printf("user %s: bad timezone %q: %v", userName, user.Timezone, tzErr)
+			} else {
+				defer tools.ClearTimezone()
+			}
+		}
 	}
 
 	// Enable ask_user and send_image tools for Telegram sessions
@@ -555,6 +605,10 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	}
 	prompts := *promptsTemplate // copy template
 	applyLanguage(&prompts, lang)
+	// Tool prompts live in package tools; bind this user's language copy for
+	// the duration of the request rather than leaving the process default.
+	tools.SetToolPrompts(prompts.ImapSummarize, prompts.ImapDigest)
+	defer tools.ClearToolPrompts()
 	prompts.SystemPrompt += AskUserPromptHint
 	if user != nil && user.Memory != "" {
 		prompts.SystemPrompt += MemoryPromptHint

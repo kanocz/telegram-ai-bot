@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,11 @@ type appConfig struct {
 
 func strPtr(s string) *string { return &s }
 
+// maxToolRounds bounds the tool-calling loop. The loop only ends when the
+// model stops asking for tools, so a model that keeps re-calling one would
+// otherwise run until something else breaks.
+const maxToolRounds = 30
+
 func loadConfig(path string) (modelID string, cfg modelConfig, language string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -52,9 +58,8 @@ func loadConfig(path string) (modelID string, cfg modelConfig, language string, 
 	}
 
 	if len(ac.Model) > 0 {
-		for id, c := range ac.Model {
-			return id, c, ac.Language, nil
-		}
+		id := firstModelID(ac.Model)
+		return id, ac.Model[id], ac.Language, nil
 	}
 
 	// Fallback: old flat format {"modelId": {...}}
@@ -62,10 +67,23 @@ func loadConfig(path string) (modelID string, cfg modelConfig, language string, 
 	if err := json.Unmarshal(data, &flat); err != nil {
 		return "", modelConfig{}, "", err
 	}
-	for id, c := range flat {
-		return id, c, "", nil
+	if len(flat) > 0 {
+		id := firstModelID(flat)
+		return id, flat[id], "", nil
 	}
 	return "", modelConfig{}, "", fmt.Errorf("no models defined in config")
+}
+
+// firstModelID picks one model from the config. Map iteration order in Go is
+// randomized, so ranging over the map would pick a different model on each
+// start when the config holds more than one.
+func firstModelID(models map[string]modelConfig) string {
+	ids := make([]string, 0, len(models))
+	for id := range models {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids[0]
 }
 
 func main() {
@@ -137,6 +155,11 @@ func main() {
 	usersPath = filepath.Join(configDir, "users.json")
 	tools.SetHAConfigPath(filepath.Join(configDir, "homeassistant.json"))
 
+	// Close the Home Assistant WebSocket on the way out. Declared here rather
+	// than next to the one-shot query path, which the bot and interactive
+	// modes return before ever reaching.
+	defer tools.HAClose()
+
 	// Merge -cli alias into interactive
 	if *cliMode {
 		*interactive = true
@@ -147,7 +170,10 @@ func main() {
 
 	// Register filesystem and git tools
 	if *filesystemRoot != "" {
-		tools.RegisterFilesystem(*filesystemRoot, *filesystemRW)
+		if err := tools.RegisterFilesystem(*filesystemRoot, *filesystemRW); err != nil {
+			fmt.Fprintf(os.Stderr, "filesystem error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	if *gitDir != "" || *gitFlag {
 		repoPath := *gitDir
@@ -464,6 +490,12 @@ func main() {
 		if contactsCfg := userContactsConfig(user); contactsCfg != nil {
 			tools.SetContactsOverride(contactsCfg)
 		}
+		if user.Timezone != "" {
+			if tzErr := tools.SetTimezone(user.Timezone); tzErr != nil {
+				fmt.Fprintf(os.Stderr, "user %s: bad timezone %q: %v\n", userName, user.Timezone, tzErr)
+				os.Exit(1)
+			}
+		}
 		// User language (overridden by CLI flag)
 		if user.Language != "" && *languageFlag == "" {
 			language = user.Language
@@ -543,7 +575,6 @@ func main() {
 	if cmdName, cmdText := parseCommandName(query); cmdName != "" {
 		if cmd := tools.GetCommand(cmdName); cmd != nil {
 			// Init command's MCP servers
-			allMCP := dedup(mcpNames, cmd.MCPServers)
 			if mcpMgr != nil && len(cmd.MCPServers) > 0 {
 				if err := mcpMgr.InitServers(cmd.MCPServers); err != nil {
 					fmt.Fprintf(os.Stderr, "mcp init error: %v\n", err)
@@ -553,7 +584,6 @@ func main() {
 				fmt.Fprintf(os.Stderr, "error: command /%s requires MCP servers %v but mcp.json not found\n", cmdName, cmd.MCPServers)
 				os.Exit(1)
 			}
-			_ = allMCP
 
 			ctx := &tools.CommandContext{Text: cmdText}
 			result, err := cmd.Handler(ctx)
@@ -646,7 +676,10 @@ func main() {
 		query = "" // clear so the REPL prompts for input
 		cwd, _ := os.Getwd()
 		if *filesystemRoot == "" {
-			tools.RegisterFilesystem(cwd, true)
+			if err := tools.RegisterFilesystem(cwd, true); err != nil {
+				fmt.Fprintf(os.Stderr, "filesystem error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		if *gitDir == "" && !*gitFlag {
 			if err := tools.RegisterGit(cwd); err != nil {
@@ -702,8 +735,6 @@ func main() {
 		}
 		return
 	}
-
-	defer tools.HAClose()
 
 	var images []ImageURL
 	if *imageFile != "" {
@@ -794,8 +825,9 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	if strings.Contains(query, "\n=== Video Overview") {
 		userMsg.VideoFrames = true
 	}
-	// Inject current time dynamically so it's always fresh
-	now := time.Now()
+	// Inject current time dynamically so it's always fresh, in the user's
+	// zone rather than the server's (see tools.Location).
+	now := time.Now().In(tools.Location())
 	zone, _ := now.Zone()
 	systemPrompt := prompts.SystemPrompt + fmt.Sprintf("\n\nCurrent time: %s (%s).",
 		now.Format("2006-01-02 15:04"), zone)
@@ -811,8 +843,25 @@ func runQuery(cfg modelConfig, modelID string, query string,
 	messages = append(messages, history...)
 	messages = append(messages, userMsg)
 
-	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, think)
+	for round := 0; ; round++ {
+		if round >= maxToolRounds {
+			// A model stuck re-calling the same tool would otherwise loop
+			// until the context blows up, burning requests the whole way.
+			logf("%s[tool limit: %d rounds reached, asking for a final answer]%s\n",
+				colorDim, maxToolRounds, colorReset)
+			result, err := doStream(cfg.BaseURL, modelID, messages, nil,
+				capMaxTokens(cfg.Limit.Context, cfg.Limit.Output, messages),
+				showThinking, contentOut, think)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintln(contentOut)
+			return result.Content, nil
+		}
+
+		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs,
+			capMaxTokens(cfg.Limit.Context, cfg.Limit.Output, messages),
+			showThinking, contentOut, think)
 		if err != nil {
 			return "", err
 		}
@@ -968,8 +1017,15 @@ func runMailSummary(cfg modelConfig, modelID string, showThinking bool, contentO
 		toolDefs = append(toolDefs, mcpMgr.ActiveToolDefs(mcpNames, mcpOverrides)...)
 	}
 
-	for {
-		result, err := doStream(cfg.BaseURL, modelID, messages, toolDefs, cfg.Limit.Output, showThinking, contentOut, think)
+	for round := 0; ; round++ {
+		roundTools := toolDefs
+		if round >= maxToolRounds {
+			// Drop the tools to force a text answer instead of looping.
+			roundTools = nil
+		}
+		result, err := doStream(cfg.BaseURL, modelID, messages, roundTools,
+			capMaxTokens(cfg.Limit.Context, cfg.Limit.Output, messages),
+			showThinking, contentOut, think)
 		if err != nil {
 			return "", fmt.Errorf("final synthesis: %w", err)
 		}
