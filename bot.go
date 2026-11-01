@@ -452,8 +452,21 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		w.WriteHeader(http.StatusOK)
 
 		// Handle callback queries (inline keyboard button presses)
-		if update.CallbackQuery != nil {
-			handleCallbackQuery(tgCfg.Token, update.CallbackQuery)
+		if cq := update.CallbackQuery; cq != nil {
+			// News topic button: run it as a "/news nd:..." message replying to the list.
+			if strings.HasPrefix(cq.Data, newsDivePrefix) && cq.Message != nil && cq.From != nil {
+				_ = answerCallbackQuery(tgCfg.Token, cq.ID)
+				user, userName := findUser(users, cq.From.ID)
+				if user == nil && !botCfg.AllowUnregistered {
+					log.Printf("Rejected news button from unregistered user %d", cq.From.ID)
+					return
+				}
+				log.Printf("News button %s from %d (chat %d)", cq.Data, cq.From.ID, cq.Message.Chat.ID)
+				m := &TGMessage{MessageID: cq.Message.MessageID, From: cq.From, Chat: cq.Message.Chat, Text: "/news " + cq.Data}
+				go handleBotMessage(tgCfg.Token, cfg, modelID, showThinking, logf, promptsTemplate, defaultLang, verboseTools, newsConfigPath, mcpMgr, globalThink, m, user, userName)
+				return
+			}
+			handleCallbackQuery(tgCfg.Token, cq)
 			return
 		}
 
@@ -469,14 +482,8 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		// Resolve user by Telegram ID
 		var user *UserConfig
 		var userName string
-		if msg.From != nil && users != nil {
-			for k, u := range users {
-				if u.TelegramID == msg.From.ID {
-					user = u
-					userName = k
-					break
-				}
-			}
+		if msg.From != nil {
+			user, userName = findUser(users, msg.From.ID)
 		}
 
 		// Access control. msg.From is absent for channel posts and anonymous
@@ -543,6 +550,16 @@ func runBot(tgCfg *telegramConfig, cfg modelConfig, modelID string,
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil
+}
+
+// findUser returns the configured user with this Telegram ID, or nil.
+func findUser(users map[string]*UserConfig, telegramID int64) (*UserConfig, string) {
+	for k, u := range users {
+		if u.TelegramID == telegramID {
+			return u, k
+		}
+	}
+	return nil, ""
 }
 
 func handleBotMessage(token string, cfg modelConfig, modelID string,
@@ -816,26 +833,33 @@ func handleBotMessage(token string, cfg modelConfig, modelID string,
 	switch {
 	case text == "/news" || strings.HasPrefix(text, "/news "):
 		newsArg := strings.TrimSpace(strings.TrimPrefix(text, "/news"))
-		if newsArg == "" {
-			result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
-		} else {
-			// Try to match a category for browse mode
-			categories, catErr := readNewsConfig(newsConfigPath)
-			if catErr != nil {
-				err = catErr
-			} else if cat := matchCategory(newsArg, categories); cat != nil {
-				prompter := tools.GetPrompter()
-				if prompter == nil {
-					// Fallback: no prompter, do full category summary without interaction
-					result, err = runNewsSummary(cfg, modelID, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
-				} else {
-					result, err = runNewsBrowse(cfg, modelID, cat, showThinking, debugOut, logf, &prompts, mcpMgr, mcpNames, think, mcpOverrides, prompter)
-				}
-			} else {
-				// Free text search
-				result, err = runNewsSearch(cfg, modelID, newsArg, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
-			}
+		if strings.HasPrefix(newsArg, newsDivePrefix) {
+			result, err = runNewsDive(cfg, modelID, newsArg, &prompts, logf, mcpMgr, mcpNames, think, mcpOverrides)
+			break
 		}
+		categories, catErr := readNewsConfig(newsConfigPath)
+		if catErr != nil {
+			err = catErr
+			break
+		}
+		// "/news" lists every category, "/news <category>" one; anything else is a search.
+		if newsArg != "" {
+			cat := matchCategory(newsArg, categories)
+			if cat == nil {
+				result, err = runNewsSearch(cfg, modelID, newsArg, showThinking, debugOut, logf, newsConfigPath, &prompts, mcpMgr, mcpNames, think, mcpOverrides)
+				break
+			}
+			categories = []newsCategory{*cat}
+		}
+		lists, listErr := buildNewsLists(cfg, modelID, categories, &prompts, logf)
+		if listErr == nil {
+			listErr = sendNewsLists(token, chatID, lists)
+		}
+		if listErr != nil {
+			err = listErr
+			break
+		}
+		return
 
 	case text == "/mail" || strings.HasPrefix(text, "/mail "):
 		sinceHours := 24.0

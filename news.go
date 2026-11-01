@@ -735,7 +735,8 @@ func searchTopics(cfg modelConfig, modelID string, headlines []sourceHeadlines, 
 }
 
 // deepDiveTopics runs Phase 3 (deep dive) for the given topics and returns results.
-func deepDiveTopics(cfg modelConfig, modelID string, topics []topicGroup, category string, prompts *Prompts, progress func(string),
+// Topics with fewer than minSources articles get their briefs instead of a deep dive.
+func deepDiveTopics(cfg modelConfig, modelID string, topics []topicGroup, category string, minSources int, prompts *Prompts, progress func(string),
 	logf func(string, ...any), mcpMgr *MCPManager, mcpNames []string, think thinkMode, mcpOverrides map[string]bool) []topicResult {
 
 	// Prepare tools for deep-dive sub-agents
@@ -754,14 +755,14 @@ func deepDiveTopics(cfg modelConfig, modelID string, topics []topicGroup, catego
 	var results []topicResult
 	multiSourceCount := 0
 	for _, t := range topics {
-		if len(t.Articles) >= 2 {
+		if len(t.Articles) >= minSources {
 			multiSourceCount++
 		}
 	}
 
 	deepIdx := 0
 	for _, t := range topics {
-		if len(t.Articles) < 2 {
+		if len(t.Articles) < minSources {
 			brief := buildBriefFromArticles(t.Articles)
 			results = append(results, topicResult{
 				TopicTitle:  t.TopicTitle,
@@ -961,7 +962,7 @@ func runNewsBrowse(cfg modelConfig, modelID string, cat *newsCategory, showThink
 
 	// Phase 3: Deep dive
 	progress(fmt.Sprintf("Фаза 3: Анализ %d тем...", len(selectedTopics)))
-	results := deepDiveTopics(cfg, modelID, selectedTopics, cat.Name, prompts, progress, logf, mcpMgr, mcpNames, think, mcpOverrides)
+	results := deepDiveTopics(cfg, modelID, selectedTopics, cat.Name, 2, prompts, progress, logf, mcpMgr, mcpNames, think, mcpOverrides)
 	tools.ClearTempMemory()
 
 	// Format output
@@ -1080,7 +1081,7 @@ func runNewsSearch(cfg modelConfig, modelID string, query string, showThinking b
 
 	// Phase 3: Deep dive on all found topics
 	progress("Фаза 3: Анализ найденных тем...")
-	results := deepDiveTopics(cfg, modelID, clustering.Topics, "Поиск: "+query, prompts, progress, logf, mcpMgr, mcpNames, think, mcpOverrides)
+	results := deepDiveTopics(cfg, modelID, clustering.Topics, "Поиск: "+query, 2, prompts, progress, logf, mcpMgr, mcpNames, think, mcpOverrides)
 	tools.ClearTempMemory()
 
 	if len(results) == 0 {

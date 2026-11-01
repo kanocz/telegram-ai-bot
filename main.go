@@ -153,6 +153,7 @@ func main() {
 		mcpConfigPath = strPtr(filepath.Join(configDir, "mcp.json"))
 	}
 	usersPath = filepath.Join(configDir, "users.json")
+	newsListDir = filepath.Join(configDir, "news-cache")
 	tools.SetHAConfigPath(filepath.Join(configDir, "homeassistant.json"))
 	tools.SetImageGenConfigPath(filepath.Join(configDir, "thenoise.json"))
 
@@ -626,6 +627,28 @@ func main() {
 				os.Exit(1)
 			}
 			logf("%sОтправлено в Telegram (%d символов)%s\n", colorDim, len(content), colorReset)
+		}
+		return
+	}
+
+	if *newsSummary && query == "" && *telegram {
+		// Telegram digest: topic lists with buttons, deep dive on demand (served by -telegram-bot).
+		categories, err := readNewsConfig(*newsConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "news config error: %v\n", err)
+			os.Exit(1)
+		}
+		lists, err := buildNewsLists(cfg, modelID, categories, &prompts, logf)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "news summary error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, l := range lists {
+			fmt.Fprintf(contentOut, "%s\n\n", formatNewsList(l))
+		}
+		if err := sendNewsLists(tgCfg.Token, userChatID(user, "news", *telegramChatID), lists); err != nil {
+			fmt.Fprintf(os.Stderr, "telegram error: %v\n", err)
+			os.Exit(1)
 		}
 		return
 	}

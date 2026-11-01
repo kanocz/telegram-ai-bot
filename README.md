@@ -308,7 +308,7 @@ Sub-agents analyze each news source (with ability to open full articles via `web
 ```bash
 ./ai-webfetch -news-summary
 ./ai-webfetch -news-summary -news-config my-news.json
-./ai-webfetch -news-summary -quiet -telegram    # cron mode
+./ai-webfetch -news-summary -quiet -telegram    # cron mode: 10 topics per category with buttons; -telegram-bot runs the deep dive on press (lists kept 2 days in <config-dir>/news-cache)
 ```
 
 ### News — interactive category browse
@@ -374,8 +374,8 @@ Context tracking: after each response, the current context usage is displayed wi
 The Telegram bot also supports interactive news modes:
 
 ```
-/news              — full news digest
-/news europe       — browse Europe category (with inline keyboard for topic selection)
+/news              — 10 topics per category with buttons, deep dive on press
+/news europe       — same for one category
 /news выборы 2026  — search for a specific topic across all sources
 ```
 
@@ -424,8 +424,8 @@ Start the webhook bot:
 ```
 
 Bot commands:
-- `/news` — full news digest
-- `/news <category>` — interactive category browse (e.g. `/news europe`, `/news война`)
+- `/news` — 10 topics per category with buttons; a button runs the deep dive comparing sources
+- `/news <category>` — same for one category (e.g. `/news europe`, `/news война`)
 - `/news <topic>` — topic search across all sources (e.g. `/news выборы 2026`)
 - `/mail [hours]` — mail digest (default 24 hours)
 - `/think <query>` — enable model thinking for this query
