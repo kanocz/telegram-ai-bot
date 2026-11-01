@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -163,13 +165,77 @@ type StreamResult struct {
 // llmClient talks to the model. A long generation must not be cut off
 // mid-body, so the overall timeout stays off and only the connect and
 // response-header phases are bounded: a server that accepts the connection and
-// then goes silent still releases the caller.
+// then goes silent still releases the caller. All model calls stream, so the
+// headers arrive before generation starts; postStream bounds the body.
 var llmClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Minute,
 	},
+}
+
+// streamIdleTimeout is the longest gap allowed between two reads of a model
+// stream. A var so tests can shorten it.
+var streamIdleTimeout = 5 * time.Minute
+
+var errStreamIdle = errors.New("model stream stalled")
+
+// idleBody fails the stream once no data arrives for streamIdleTimeout.
+// The timer cancels the request context, which unblocks a pending Read.
+type idleBody struct {
+	io.ReadCloser
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	timer  *time.Timer
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && context.Cause(b.ctx) == errStreamIdle {
+		return n, fmt.Errorf("%w: no data for %v", errStreamIdle, streamIdleTimeout)
+	}
+	if n > 0 {
+		b.timer.Reset(streamIdleTimeout)
+	}
+	return n, err
+}
+
+func (b *idleBody) Close() error {
+	b.timer.Stop()
+	b.cancel(nil)
+	return b.ReadCloser.Close()
+}
+
+// postStream sends a streaming chat request and returns the response body,
+// guarded by streamIdleTimeout. The caller must close it.
+func postStream(apiURL string, payload []byte) (io.ReadCloser, error) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payload))
+	if err != nil {
+		cancel(nil)
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := llmClient.Do(httpReq)
+	if err != nil {
+		cancel(nil)
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel(nil)
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, b)
+	}
+
+	return &idleBody{
+		ReadCloser: resp.Body,
+		ctx:        ctx,
+		cancel:     cancel,
+		timer:      time.AfterFunc(streamIdleTimeout, func() { cancel(errStreamIdle) }),
+	}, nil
 }
 
 // httpClient is for ordinary request/response APIs (Telegram, MCP).
@@ -215,22 +281,11 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 		dumpRequestDebug(apiURL, payload)
 	}
 
-	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(payload))
+	body, err := postStream(apiURL, payload)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := llmClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, b)
-	}
+	defer body.Close()
 
 	var result StreamResult
 	tcMap := map[int]*ToolCall{}
@@ -257,7 +312,7 @@ func doStream(baseURL, model string, messages []Message, toolDefs []tools.Defini
 	reasoningDim := false
 	var reasoningBuf strings.Builder
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 
 	for scanner.Scan() {
@@ -589,54 +644,18 @@ func doSubAgentWithTools(baseURL, model string, messages []Message,
 	return stripThinkTags(result.Content), nil
 }
 
-// doChat makes a non-streaming chat completion call (used by sub-agents).
+// doChat makes a chat completion call without tools and returns the whole
+// answer (used by sub-agents). It streams under the hood: a non-streaming
+// response sends its headers only after generation ends, so a long answer
+// would trip ResponseHeaderTimeout.
 // contextLimit is the model's total context window (0 = no capping).
 func doChat(baseURL, model string, messages []Message, maxTokens, contextLimit int, think thinkMode) (string, error) {
 	effectiveMax := capMaxTokens(contextLimit, maxTokens, messages)
-	reqBody := chatRequest{
-		Model:     model,
-		Messages:  messages,
-		Stream:    false,
-		MaxTokens: effectiveMax,
-	}
-	applyThinkMode(&reqBody, think)
-	payload, err := json.Marshal(reqBody)
+	result, err := doStream(baseURL, model, messages, nil, effectiveMax, false, io.Discard, think)
 	if err != nil {
 		return "", err
 	}
-
-	httpReq, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := llmClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, b)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode error: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty response from model")
-	}
-
-	return stripThinkTags(result.Choices[0].Message.Content), nil
+	return stripThinkTags(result.Content), nil
 }
 
 var reThinkTags = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
@@ -772,22 +791,11 @@ func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, 
 		return "", err
 	}
 
-	httpReq, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(payload))
+	body, err := postStream(baseURL+"/chat/completions", payload)
 	if err != nil {
 		return "", err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := llmClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, b)
-	}
+	defer body.Close()
 
 	var contentBuf strings.Builder
 	hadReasoning := false
@@ -801,7 +809,7 @@ func doSubAgentStream(baseURL, model string, messages []Message, maxTokens int, 
 		onThinkEnd:   func() { pw.WriteString(colorReset + "\n") },
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 
 	for scanner.Scan() {
